@@ -33,15 +33,24 @@ import kotlin.math.roundToLong
 class NavigationSession(
     context: Context,
     private val central: Esp32BleCentral,
-    private val gateway: GatewayClient = GatewayClient(),
 ) {
+    private val gatewayStore = GatewaySettingsStore(context)
+    private var gateway: GatewayClient = GatewayClient(gatewayStore.current())
+    private val recentStore = RecentPlacesStore(context)
     data class UiState(
         val engineState: Int = 0,
         val status: String = "未开始",
+        val query: String = "",
+        val isSearching: Boolean = false,
+        val searchFailure: String? = null,
         val hasFix: Boolean = false,
         val accuracyM: Double = 0.0,
         val places: List<Place> = emptyList(),
         val selected: Place? = null,
+        val routeOptions: List<GatewayRoute> = emptyList(),
+        val optionsLoading: Boolean = false,
+        val chosenOptionIndex: Int = -1,
+        val routePreviewFailure: String? = null,
         val route: GatewayRoute? = null,
         val remainingM: Double = 0.0,
         val remainingS: Int = 0,
@@ -53,6 +62,7 @@ class NavigationSession(
         val mediaAccess: Boolean = false,
         val mediaConnected: Boolean = false,
         val mediaTitle: String = "",
+        val navigationFailure: String? = null,
         val log: List<String> = emptyList(),
     )
 
@@ -65,6 +75,11 @@ class NavigationSession(
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    private val _recent = MutableStateFlow(recentStore.load())
+    val recent: StateFlow<List<SavedPlace>> = _recent.asStateFlow()
+
+    val isNavigationActive: Boolean get() = navigating
+
     private var lastFix: GpsLocationSource.Fix? = null
     private var navigating = false
     private var ticker: Job? = null
@@ -73,6 +88,11 @@ class NavigationSession(
     private var bleWasReady = false
     private var requestCounter = 0
     private var hasLoggedFix = false
+    private var fixCount = 0
+    private var chosenPreviewRoute: GatewayRoute? = null
+    private var suppliedPreviewRoute = false
+    private var previewOriginLon: Double? = null
+    private var previewOriginLat: Double? = null
 
     // Debug-only harness (BuildConfig.DEBUG): lets adb start a live navigation
     // without touch input. Never enabled in release builds.
@@ -161,6 +181,7 @@ class NavigationSession(
     }
 
     private fun deliverFix(fix: GpsLocationSource.Fix) {
+        fixCount += 1
         // While stationary the GNSS course is meaningless; use the phone
         // compass so the round display's heading/compass page is meaningful.
         val effective = if (fix.speedMps < 1.0 && compassHeading != null) {
@@ -340,22 +361,245 @@ class NavigationSession(
             log("地点坐标系不是 WGS84，已拒绝")
             return
         }
-        _state.value = _state.value.copy(selected = place)
+        _state.value = _state.value.copy(
+            selected = place,
+            routeOptions = emptyList(),
+            chosenOptionIndex = -1,
+            navigationFailure = null,
+        )
         log("已选择：${place.name}")
+        recordRecent(place)
+        planRoutePreview()
+    }
+
+    /**
+     * Mirrors iOS planRoutePreview(): always take a fresh one-shot fix (never
+     * the stale point that biased the search), then ask the gateway for up to
+     * three candidate routes for the user to pick from.
+     */
+    fun planRoutePreview() {
+        if (navigating) return
+        val place = _state.value.selected ?: return
+        _state.value = _state.value.copy(
+            optionsLoading = true,
+            routeOptions = emptyList(),
+            chosenOptionIndex = -1,
+            navigationFailure = null,
+        )
+        log("正在规划路线")
+        scope.launch {
+            val origin = awaitFreshFix()
+            if (origin == null) {
+                _state.value = _state.value.copy(
+                    optionsLoading = false,
+                    navigationFailure = "需要当前位置才能规划路线，请检查定位",
+                )
+                return@launch
+            }
+            previewOriginLon = origin.first
+            previewOriginLat = origin.second
+            val requestId = ++requestCounter
+            runCatching {
+                gateway.routeOptions(
+                    requestId, origin.first, origin.second,
+                    place.longitude, place.latitude,
+                    isReroute = false, previousRouteId = null,
+                    destinationPoiId = place.id.ifEmpty { null },
+                )
+            }.onSuccess { candidates ->
+                if (candidates.isEmpty()) {
+                    _state.value = _state.value.copy(
+                        optionsLoading = false,
+                        navigationFailure = "高德没有返回可用路线，请稍后重试",
+                    )
+                    return@onSuccess
+                }
+                _state.value = _state.value.copy(
+                    optionsLoading = false,
+                    routeOptions = candidates,
+                    chosenOptionIndex = 0,
+                )
+                log("已获取 ${candidates.size} 条候选路线")
+            }.onFailure { error ->
+                _state.value = _state.value.copy(
+                    optionsLoading = false,
+                    navigationFailure = "路线规划失败，请检查网络后重试",
+                )
+                log("候选路线请求失败：${error.message}")
+            }
+        }
+    }
+
+    /** One-shot fresh fix for route planning (iOS refreshForRoutePlanning). */
+    private suspend fun awaitFreshFix(): Pair<Double, Double>? {
+        val recent = lastFix
+        if (recent != null && System.currentTimeMillis() - recent.timestampMs <= 5_000) {
+            return recent.longitude to recent.latitude
+        }
+        log("正在获取当前位置")
+        val deadline = SystemClock.elapsedRealtime() + 12_000
+        val startCount = fixCount
+        while (SystemClock.elapsedRealtime() < deadline) {
+            delay(250)
+            if (fixCount > startCount) {
+                lastFix?.let { return it.longitude to it.latitude }
+            }
+        }
+        return lastFix?.let { it.longitude to it.latitude }
+    }
+
+    fun selectOption(index: Int) {
+        val options = _state.value.routeOptions
+        if (index !in options.indices) return
+        _state.value = _state.value.copy(chosenOptionIndex = index, navigationFailure = null)
+        log("已选择：${optionTitle(_state.value.chosenOptionIndex)}")
+    }
+
+    /** iOS clearDestination(): back to the destination search state. */
+    fun clearDestination() {
+        if (navigating) {
+            log("请先结束导航，再更换目的地")
+            return
+        }
+        _state.value = _state.value.copy(
+            selected = null,
+            routeOptions = emptyList(),
+            chosenOptionIndex = -1,
+            navigationFailure = null,
+            route = null,
+        )
+    }
+
+    // --- iOS-parity search surface (debounced query, recent places) ---------
+
+    private var searchDebounce: Job? = null
+    private var lastQuery = ""
+
+    fun queryChanged(query: String) {
+        if (navigating) return
+        _state.value = _state.value.copy(query = query)
+        val trimmed = query.trim()
+        if (trimmed == lastQuery) return
+        lastQuery = trimmed
+        if (trimmed.length < 2) {
+            searchDebounce?.cancel()
+            _state.value = _state.value.copy(places = emptyList())
+            return
+        }
+        searchDebounce?.cancel()
+        searchDebounce = scope.launch {
+            delay(480)
+            searchInternal(trimmed)
+        }
+    }
+
+    fun submitSearch() {
+        if (navigating) return
+        searchDebounce?.cancel()
+        if (lastQuery.length >= 2) searchInternal(lastQuery)
+    }
+
+    fun clearQuery() {
+        searchDebounce?.cancel()
+        lastQuery = ""
+        _state.value = _state.value.copy(places = emptyList(), query = "")
+    }
+
+    fun clearRecent() {
+        _recent.value = recentStore.clear()
+        log("已清空最近搜索")
+    }
+
+    fun selectRecent(place: SavedPlace) {
+        select(
+            Place(
+                id = place.id, name = place.name, address = place.address,
+                city = place.city, district = place.district,
+                displayArea = place.displayArea,
+                longitude = place.longitude, latitude = place.latitude,
+                coordinateSystem = "WGS84", distanceM = null,
+            ),
+        )
+    }
+
+    private fun recordRecent(place: Place) {
+        _recent.value = recentStore.record(SavedPlace.fromPlace(place))
+    }
+
+    private fun searchInternal(keywords: String) {
+        scope.launch {
+            _state.value = _state.value.copy(isSearching = true, searchFailure = null)
+            runCatching {
+                val fix = lastFix
+                gateway.searchPlaces(keywords, fix?.let { it.longitude to it.latitude })
+            }.onSuccess { places ->
+                _state.value = _state.value.copy(places = places, isSearching = false)
+                log("搜索到 ${places.size} 个地点")
+            }.onFailure { error ->
+                _state.value = _state.value.copy(
+                    isSearching = false,
+                    searchFailure = "地点搜索失败，请检查网络后重试",
+                )
+                log("搜索失败：${error.message}")
+            }
+        }
+    }
+
+    // --- gateway settings（iOS GatewaySettingsView 副作用） -----------------
+
+    fun gatewayCurrent(): String = gatewayStore.current()
+
+    fun gatewayCustomised(): Boolean = gatewayStore.isCustomised()
+
+    /** @return the saved URL; throws IllegalArgumentException on bad input. */
+    fun gatewaySave(raw: String): String {
+        require(!navigating) { "请先结束导航，再更换网关地址。" }
+        val url = gatewayStore.save(raw)
+        gateway = GatewayClient(url)
+        clearDestination()
+        log("网关已更新：$url")
+        return url
+    }
+
+    // --- demo（iOS 演示模式：模拟定位 + 真实路网，明确标注） ----------------
+
+    fun startDemo() {
+        if (navigating) return
+        log("演示导航开始：位置与行驶过程为模拟数据")
+        // Jinan demo fixture origin (shared/demo_fixture), labelled simulated.
+        debugSimulatedFix(117.1210, 36.6705)
+        pendingDebugQuery = "泉城广场"
+        autoStartAfterSearch = true
+        if (lastFix != null) {
+            val query = pendingDebugQuery
+            pendingDebugQuery = null
+            search(query!!)
+        }
     }
 
     fun start() {
         val place = _state.value.selected ?: run {
-            log("请先选择目的地")
+            log("请先选择终点")
             return
         }
         val fix = lastFix ?: run {
             log("等待定位后再开始导航")
             return
         }
+        val options = _state.value.routeOptions
+        if (options.isEmpty()) {
+            log("请先完成路线规划并选择一条路线")
+            planRoutePreview()
+            return
+        }
         navigating = true
         destinationLon = place.longitude
         destinationLat = place.latitude
+        // PreviewSelectedRouteProvider semantics: the chosen candidate is fed to
+        // NavCore's first (non-reroute) request; reroutes use the live gateway.
+        chosenPreviewRoute = _state.value.chosenOptionIndex
+            .takeIf { it in options.indices }?.let { options[it] }
+        suppliedPreviewRoute = false
         _state.value = _state.value.copy(status = "规划中", places = emptyList())
         log("开始导航：${place.name}")
         val result = engine.beginNavigation(place.longitude, place.latitude)
@@ -378,7 +622,18 @@ class NavigationSession(
         ticker?.cancel()
         ticker = null
         engine.cancel()
-        _state.value = _state.value.copy(status = "已结束", route = null, instruction = "")
+        chosenPreviewRoute = null
+        suppliedPreviewRoute = false
+        // iOS stopNavigation(): return to the destination search state.
+        _state.value = _state.value.copy(
+            status = "已结束",
+            route = null,
+            instruction = "",
+            selected = null,
+            routeOptions = emptyList(),
+            chosenOptionIndex = -1,
+            navigationFailure = null,
+        )
         log("导航已结束")
     }
 
@@ -456,6 +711,24 @@ class NavigationSession(
 
     private fun requestRoute(command: EngineCommand) {
         val requestId = if (command.requestId != 0) command.requestId else ++requestCounter
+        // First non-reroute request consumes the preview-selected candidate
+        // (only when the planning origin has not drifted), matching iOS.
+        if (!command.reroute && !suppliedPreviewRoute) {
+            val chosen = chosenPreviewRoute
+            val fix = lastFix
+            val plannedLon = previewOriginLon
+            val plannedLat = previewOriginLat
+            if (chosen != null && fix != null && plannedLon != null && plannedLat != null) {
+                val drift = haversineM(plannedLon, plannedLat, fix.longitude, fix.latitude)
+                if (drift <= PREVIEW_ORIGIN_DRIFT_M) {
+                    suppliedPreviewRoute = true
+                    applyRoute(requestId, chosen, command)
+                    return
+                }
+                log("起点已漂移 ${drift.roundToInt()} m，放弃预选路线并实时重算")
+            }
+            suppliedPreviewRoute = true
+        }
         scope.launch {
             runCatching {
                 val previous = _state.value.route?.routeId
@@ -466,22 +739,7 @@ class NavigationSession(
                     command.reroute, previous,
                 )
             }.onSuccess { route ->
-                runCatching {
-                    val accepted = engine.acceptRoute(requestId, route, System.currentTimeMillis())
-                    _state.value = _state.value.copy(
-                        route = route,
-                        status = if (command.reroute) "已重新规划" else "导航中",
-                        remainingM = route.totalDistanceM,
-                    )
-                    log(
-                        "路线已就绪：${(route.totalDistanceM / 1000).roundToInt()} km，" +
-                            "${(route.totalDurationS / 60).roundToInt()} 分钟，${route.polyline.size} 点",
-                    )
-                    feedEngine(accepted)
-                    lastGeometryKey = null
-                }.onFailure { error ->
-                    log("路线应用失败：${error.message}")
-                }
+                applyRoute(requestId, route, command)
             }.onFailure { error ->
                 val retryable = (error as? GatewayException)?.error?.retryable ?: true
                 runCatching {
@@ -489,6 +747,25 @@ class NavigationSession(
                 }
                 log("路线请求失败：${error.message}")
             }
+        }
+    }
+
+    private fun applyRoute(requestId: Int, route: GatewayRoute, command: EngineCommand) {
+        runCatching {
+            val accepted = engine.acceptRoute(requestId, route, System.currentTimeMillis())
+            _state.value = _state.value.copy(
+                route = route,
+                status = if (command.reroute) "偏航，正在重新规划" else "导航中",
+                remainingM = route.totalDistanceM,
+            )
+            log(
+                "路线已就绪：${(route.totalDistanceM / 1000).roundToInt()} km，" +
+                    "${(route.totalDurationS / 60).roundToInt()} 分钟，${route.polyline.size} 点",
+            )
+            feedEngine(accepted)
+            lastGeometryKey = null
+        }.onFailure { error ->
+            log("路线应用失败：${error.message}")
         }
     }
 
@@ -658,7 +935,7 @@ class NavigationSession(
         _state.value = _state.value.copy(log = (_state.value.log + stamped).takeLast(60))
     }
 
-    private companion object {
+    companion object {
         const val TAG = "MotoGpsNav"
         const val SNAPSHOT_INTERVAL_MS = 200L
         const val MAX_POINTS_PER_CHUNK = 24
@@ -672,7 +949,61 @@ class NavigationSession(
         const val COMMAND_MUSIC_NEXT = 18
         const val COMMAND_MUSIC_LIKE = 19
         const val PAGE_DEBOUNCE_MS = 600L
+        const val PREVIEW_ORIGIN_DRIFT_M = 120.0
         // 0 navigation, 1 speed, 2 compass, 3 music (remote control only).
         val SUPPORTED_PAGES = listOf(0, 1, 2, 3)
+
+        /** iOS RoutePreviewCandidate.title */
+        fun optionTitle(index: Int): String = when (index) {
+            0 -> "推荐路线"
+            1 -> "备选路线一"
+            else -> "备选路线二"
+        }
+
+        fun optionDistanceText(totalDistanceM: Double): String =
+            if (totalDistanceM >= 1_000) {
+                String.format(java.util.Locale.US, "%.1f km", totalDistanceM / 1_000)
+            } else {
+                "${totalDistanceM.roundToInt()} m"
+            }
+
+        fun optionDurationText(totalDurationS: Double): String {
+            val minutes = maxOf(1, Math.round(totalDurationS / 60.0).toInt())
+            return if (minutes >= 60) "${minutes / 60} 小时 ${minutes % 60} 分" else "$minutes 分钟"
+        }
+
+        /** iOS trafficSummary(): weighted slow/congested share over the route. */
+        fun optionTrafficSummary(route: GatewayRoute): String {
+            if (route.traffic.isEmpty() || route.totalDistanceM <= 0) return "暂无分段路况"
+            var slow = 0.0
+            var congested = 0.0
+            route.traffic.forEach { segment ->
+                val length = maxOf(0.0, segment.endOffsetM - segment.startOffsetM)
+                when (segment.level) {
+                    2 -> slow += length
+                    3, 4 -> congested += length
+                }
+            }
+            val congestedShare = congested / route.totalDistanceM
+            val affectedShare = (slow + congested) / route.totalDistanceM
+            return when {
+                congestedShare >= 0.12 -> "拥堵较多"
+                affectedShare >= 0.18 -> "部分路段缓行"
+                else -> "路况顺畅"
+            }
+        }
+
+        fun formatDistance(meters: Double): String =
+            if (meters >= 1_000) {
+                String.format(java.util.Locale.US, "%.1f km", meters / 1_000)
+            } else {
+                "${meters.roundToInt()} m"
+            }
+
+        fun formatDuration(seconds: Int): String = when {
+            seconds <= 0 -> "--"
+            seconds < 3_600 -> "${maxOf(1, seconds / 60)} 分钟"
+            else -> "${seconds / 3_600} 时 ${(seconds % 3_600) / 60} 分"
+        }
     }
 }

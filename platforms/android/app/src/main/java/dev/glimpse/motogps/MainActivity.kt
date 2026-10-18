@@ -15,10 +15,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import dev.glimpse.motogps.ui.BleScreen
 import dev.glimpse.motogps.ui.MapScreen
-import dev.glimpse.motogps.ui.NavScreen
+import dev.glimpse.motogps.ui.MotoAppScreen
 import dev.glimpse.motogps.ui.SelfCheckScreen
+import dev.glimpse.motogps.ProtocolSelfCheck
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,9 +61,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppScaffold(fixture: Map<String, String>) {
     var tab by remember { mutableIntStateOf(0) }
-    val titles = listOf("导航", "地图", "圆屏连接", "协议自检")
+    val titles = listOf("出发", "地图", "自检")
     // Icon per tab; getOrElse keeps this safe if a tab is added later.
-    val icons = listOf("➤", "▦", "◎", "✓")
+    val icons = listOf("➤", "▦", "✓")
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -79,9 +79,8 @@ private fun AppScaffold(fixture: Map<String, String>) {
         },
     ) { padding ->
         when (tab) {
-            0 -> NavScreen(Modifier.padding(padding))
+            0 -> MotoAppScreen()
             1 -> MapScreen(Modifier.padding(padding))
-            2 -> BleScreen(Modifier.padding(padding))
             else -> SelfCheckScreen(fixture, Modifier.padding(padding))
         }
     }
