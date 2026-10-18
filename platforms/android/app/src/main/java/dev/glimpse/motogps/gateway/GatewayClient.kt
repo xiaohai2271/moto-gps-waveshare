@@ -1,6 +1,7 @@
 package dev.glimpse.motogps.gateway
 
 import dev.glimpse.motogps.GatewayConfig
+import dev.glimpse.motogps.map.MapTilePlanner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -79,6 +80,20 @@ class GatewayClient(baseUrl: String = GatewayConfig.DEFAULT_BASE_URL) {
         )
         return GatewayJson.parseSingleRoute(request("POST", "v1/routes", body), requestId)
     }
+
+    suspend fun searchCities(keywords: String): List<CityArea> {
+        val trimmed = keywords.trim()
+        if (trimmed.length < 2) return emptyList()
+        val path = "v1/map/cities?keywords=" + URLEncoder.encode(trimmed, "UTF-8")
+        return GatewayJson.parseCities(request("GET", path))
+    }
+
+    /**
+     * Downloads one z15 tile document. The response body is capped at 8 MiB,
+     * matching the gateway limit; geometry is GCJ-02 and must not be re-offset.
+     */
+    suspend fun fetchTile(tile: MapTilePlanner.TileId): String =
+        request("GET", "v1/map/tiles/${tile.z}/${tile.x}/${tile.y}")
 
     private suspend fun request(method: String, path: String, body: String? = null): String =
         withContext(Dispatchers.IO) {

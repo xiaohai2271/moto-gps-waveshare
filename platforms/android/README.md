@@ -101,11 +101,42 @@ cd platforms/android
 | 应用层 ACK 重试（750 ms ×2） | 尚未实现，仅对设备命令回 ACK |
 | LVGL 显示数据（导航/几何/地图） | 尚未发送 |
 
+### 阶段三（真实导航）— 管线已通，硬件显示待确认
+
+| 项目 | 状态 |
+| --- | --- |
+| 网关 `/healthz` `/v1/places` `/v1/routes`（404/405 回退 route-options） | 已实现；Mi 10 真机实时选路 **通过** |
+| WGS84 请求 / GCJ-02 几何边界，request_id 回显校验 | 已实现并单测通过 |
+| 定位：平台 LocationManager，GPS + 网络双源，拒绝陈旧/低精度 | 已实现；室内网络定位可用 |
+| NavApp JNI：begin/fix/tick/accept/reject/snapshot | 已实现；Mi 10 仪器测试 **通过** |
+| NavigationSnapshot（20 字段）与 RouteGeometry 分块编码 | 已实现；真机 BLE 发送 **通过** |
+| 前台服务（location + connectedDevice）与结束通知 | 已实现，**未做锁屏时长实测** |
+| 圆屏实际渲染导航画面 | **待在圆屏上目视确认**（数据已发送） |
+| 偏航重算、路况刷新 | 未实现（命令仅记录） |
+
+### 阶段四（离线地图）— 已实现并测试
+
+| 项目 | 状态 |
+| --- | --- |
+| z15 WGS84 Web Mercator 分块（与 iOS 同一算法与测试向量） | 已实现；JVM 7 个测试通过 |
+| GCJ-02→WGS84 反解（32 轮二分，调用 C++ 正变换） | 已实现；模拟器仪器测试与 iOS 向量一致 |
+| 城市/区县搜索、范围下载、暂停/续传、删除、512 MiB 预算 | 已实现；真实瓦片下载 + 清单 + 删除模拟器 **通过** |
+| 离线包只含背景道路与建筑、保留来源署名 | 已实现 |
+| 向圆屏发送 MapScene | 尚未实现 |
+
+### 调试入口（仅 debug 构建）
+
+```text
+adb shell am start -n dev.glimpse.motogps/.MainActivity \
+  --es motoMac <圆屏 MAC> --es motoSearch 西湖
+```
+
+会直连圆屏、搜索目的地并在有定位后自动开始导航，便于无触屏验收；release 构建中该入口无效。
+
 ### 后续阶段
 
-- 阶段三：网关客户端、定位（区分权限）、NavApp JNI 复用、真实导航与偏航重算。
-- 阶段四：前台服务 + 锁屏导航、地图下载与缓存预算。
-- 阶段五：预发布 APK、签名、SHA-256、GitHub Release。
+- 阶段五：偏航/路况、MapScene 投递、锁屏实测记录。
+- 阶段六：预发布 APK、签名、SHA-256、GitHub Release。
 
 ## 网关地址（与 iOS 同步）
 
@@ -113,10 +144,9 @@ cd platforms/android
 `platforms/ios/project.yml` 的 `MOTOGPSGatewayBaseURL` 保持一致：
 
 ```text
-https://nav.example.com/moto-gps/api/
+https://moto.menghuan.life/
 ```
 
-- `nav.example.com` 是**占位域名**，真实部署需在 App 设置中改成自己的 HTTPS 网关。
 - 只允许 `https`，或回环地址 `127.0.0.1` / `localhost` 上的 `http`（与 iOS 校验一致）。
 - 末端路径自动补一个 `/`，调用 `v1/routes` 等接口时不会出现双斜杠。
 - 高德 Web 服务 Key 只在网关后端，不进 APK。

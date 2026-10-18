@@ -11,9 +11,12 @@ import android.os.Looper
 import androidx.core.content.ContextCompat
 
 /**
- * GNSS source built on the platform LocationManager so it works on devices
- * without Google Play Services. Coordinates are WGS84; conversion to GCJ-02
- * happens only at the gateway boundary or when comparing with route geometry.
+ * Multi-provider location source built on the platform LocationManager, so it
+ * works on devices without Google Play Services.
+ *
+ * GPS updates arrive every second; network updates provide an indoor fallback
+ * with coarser accuracy. A fix is only delivered when it is fresh (<=15 s) and
+ * accurate enough for navigation; consumers see WGS84 coordinates only.
  */
 class GpsLocationSource(private val context: Context) {
 
@@ -24,6 +27,7 @@ class GpsLocationSource(private val context: Context) {
         val speedMps: Double,
         val headingDeg: Double,
         val timestampMs: Long,
+        val provider: String,
     )
 
     fun interface Listener {
@@ -35,17 +39,34 @@ class GpsLocationSource(private val context: Context) {
 
     private var callback: Listener? = null
     private var failure: ((String) -> Unit)? = null
+    private var lastDeliveredAtMs = 0L
+    private var lastProvider: String? = null
 
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
-            toFix(location)?.let { callback?.onFix(it) }
+            toFix(location)?.let { fix ->
+                // Prefer GPS; do not let a coarse network ping overwrite a recent
+                // high-accuracy GPS fix.
+                val now = System.currentTimeMillis()
+                if (lastProvider == LocationManager.GPS_PROVIDER &&
+                    fix.provider != LocationManager.GPS_PROVIDER &&
+                    now - lastDeliveredAtMs < 10_000
+                ) {
+                    return
+                }
+                lastProvider = fix.provider
+                lastDeliveredAtMs = now
+                callback?.onFix(fix)
+            }
         }
 
         @Deprecated("Deprecated in Java")
         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
         override fun onProviderEnabled(provider: String) = Unit
         override fun onProviderDisabled(provider: String) {
-            failure?.invoke("provider disabled: $provider")
+            if (provider == LocationManager.GPS_PROVIDER) {
+                failure?.invoke("GPS 关闭，使用网络定位")
+            }
         }
     }
 
@@ -62,30 +83,49 @@ class GpsLocationSource(private val context: Context) {
             onFailure("location permission missing")
             return false
         }
-        if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            onFailure("GPS provider disabled")
-            return false
-        }
         callback = onFix
         failure = onFailure
-        return runCatching {
-            manager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                1_000L,
-                0f,
-                locationListener,
-                Looper.getMainLooper(),
-            )
-            true
-        }.getOrElse {
-            onFailure("requestLocationUpdates failed: ${it.message}")
-            false
+
+        // Seed with a recent last-known fix so the UI is not blank indoors.
+        val known = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .mapNotNull { provider ->
+                runCatching {
+                    if (manager.isProviderEnabled(provider)) manager.getLastKnownLocation(provider) else null
+                }.getOrNull()
+            }
+            .maxByOrNull { it.time }
+        known?.let { location -> toFix(location)?.let { fix -> onFix.onFix(fix) } }
+
+        val providers = buildList {
+            if (runCatching { manager.isProviderEnabled(LocationManager.GPS_PROVIDER) }.getOrDefault(false)) {
+                add(LocationManager.GPS_PROVIDER to 1_000L)
+            }
+            if (runCatching { manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) }.getOrDefault(false)) {
+                add(LocationManager.NETWORK_PROVIDER to 5_000L)
+            }
         }
+        if (providers.isEmpty()) {
+            onFailure("GPS 与网络定位均不可用")
+            return false
+        }
+        var registered = false
+        providers.forEach { (provider, interval) ->
+            runCatching {
+                manager.requestLocationUpdates(
+                    provider, interval, 0f, locationListener, Looper.getMainLooper(),
+                )
+                registered = true
+            }.onFailure {
+                onFailure("$provider 注册失败：${it.message}")
+            }
+        }
+        return registered
     }
 
     fun stop() {
         callback = null
         failure = null
+        lastProvider = null
         runCatching { manager?.removeUpdates(locationListener) }
     }
 
@@ -94,7 +134,7 @@ class GpsLocationSource(private val context: Context) {
         val age = System.currentTimeMillis() - location.time
         if (age > MAX_AGE_MS) return null
         val accuracy = location.accuracy.toDouble()
-        if (accuracy < 0) return null
+        if (accuracy < 0 || accuracy > MAX_ACCURACY_M) return null
         val speed = if (location.hasSpeed()) location.speed.toDouble() else 0.0
         val heading = if (location.hasBearing()) location.bearing.toDouble() else 0.0
         return Fix(
@@ -104,10 +144,12 @@ class GpsLocationSource(private val context: Context) {
             speedMps = speed,
             headingDeg = heading,
             timestampMs = location.time,
+            provider = location.provider ?: "unknown",
         )
     }
 
     private companion object {
         const val MAX_AGE_MS = 15_000L
+        const val MAX_ACCURACY_M = 100.0
     }
 }

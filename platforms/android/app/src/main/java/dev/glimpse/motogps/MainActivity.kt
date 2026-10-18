@@ -16,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import dev.glimpse.motogps.ui.BleScreen
+import dev.glimpse.motogps.ui.MapScreen
 import dev.glimpse.motogps.ui.NavScreen
 import dev.glimpse.motogps.ui.SelfCheckScreen
 
@@ -28,6 +29,12 @@ class MainActivity : ComponentActivity() {
                 .let(ProtocolSelfCheck::parse)
         }.getOrDefault(emptyMap())
 
+        if (BuildConfig.DEBUG) {
+            val app = application as MotoGpsApplication
+            intent?.getStringExtra("motoMac")?.let { app.bleCentral.connect(it) }
+            intent?.getStringExtra("motoSearch")?.let { app.navigationSession.debugSearchAndStart(it) }
+        }
+
         setContent {
             MaterialTheme {
                 AppScaffold(fixture)
@@ -39,7 +46,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppScaffold(fixture: Map<String, String>) {
     var tab by remember { mutableIntStateOf(0) }
-    val titles = listOf("导航", "圆屏连接", "协议自检")
+    val titles = listOf("导航", "地图", "圆屏连接", "协议自检")
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -56,7 +63,8 @@ private fun AppScaffold(fixture: Map<String, String>) {
     ) { padding ->
         when (tab) {
             0 -> NavScreen(Modifier.padding(padding))
-            1 -> BleScreen(Modifier.padding(padding))
+            1 -> MapScreen(Modifier.padding(padding))
+            2 -> BleScreen(Modifier.padding(padding))
             else -> SelfCheckScreen(fixture, Modifier.padding(padding))
         }
     }

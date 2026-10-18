@@ -55,6 +55,19 @@ data class GatewayError(
     val httpStatus: Int,
 )
 
+/** Downloadable city/ district bounds in WGS84: [west, south, east, north]. */
+data class CityArea(
+    val id: String,
+    val name: String,
+    val detail: String,
+    val west: Double,
+    val south: Double,
+    val east: Double,
+    val north: Double,
+) {
+    fun bounds(): DoubleArray = doubleArrayOf(west, south, east, north)
+}
+
 class GatewayException(val error: GatewayError) :
     Exception("${error.httpStatus} ${error.code}: ${error.message}")
 
@@ -80,6 +93,40 @@ object GatewayJson {
                 distanceM = if (o.has("distance_m")) o.getDouble("distance_m") else null,
             )
         }
+    }
+
+    fun parseCities(body: String): List<CityArea> {
+        val root = JSONObject(body)
+        if (root.getInt("protocol_version") != 1) throw IllegalArgumentException("protocol version")
+        val array = root.getJSONArray("cities")
+        return List(array.length()) { i ->
+            val o = array.getJSONObject(i)
+            val bounds = o.getJSONArray("bounds_wgs84")
+            require(bounds.length() == 4) { "bounds_wgs84 must have 4 values" }
+            CityArea(
+                id = o.getString("id"),
+                name = o.getString("name"),
+                detail = o.optString("detail", ""),
+                west = bounds.getDouble(0),
+                south = bounds.getDouble(1),
+                east = bounds.getDouble(2),
+                north = bounds.getDouble(3),
+            )
+        }
+    }
+
+    /** Basic tile-document validation; geometry stays GCJ-02 and is not re-offset. */
+    fun validateTile(body: String, z: Int, x: Int, y: Int): Int {
+        val root = JSONObject(body)
+        require(root.getInt("schema_version") == 1) { "unexpected tile schema" }
+        require(root.getString("coordinate_system") == "GCJ-02") { "tile must be GCJ-02" }
+        val tile = root.getJSONObject("tile")
+        require(tile.getInt("z") == z && tile.getInt("x") == x && tile.getInt("y") == y) {
+            "tile identity mismatch"
+        }
+        val roads = root.optJSONArray("roads")?.length() ?: 0
+        val buildings = root.optJSONArray("buildings")?.length() ?: 0
+        return roads + buildings
     }
 
     fun parseRouteBundle(o: JSONObject): GatewayRoute {

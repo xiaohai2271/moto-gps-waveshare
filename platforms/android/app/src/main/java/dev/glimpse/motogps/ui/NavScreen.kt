@@ -1,6 +1,7 @@
 package dev.glimpse.motogps.ui
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,7 +29,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.glimpse.motogps.nav.NavigationSession
 import kotlin.math.roundToInt
@@ -38,10 +41,14 @@ fun NavScreen(modifier: Modifier = Modifier, vm: NavViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     var query by remember { mutableStateOf("") }
     var showLog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     val locationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) vm.start() }
 
     Column(
         modifier = modifier.fillMaxSize().padding(16.dp),
@@ -69,7 +76,18 @@ fun NavScreen(modifier: Modifier = Modifier, vm: NavViewModel = viewModel()) {
             }
             Button(
                 enabled = state.selected != null,
-                onClick = { vm.start() },
+                onClick = {
+                    if (Build.VERSION.SDK_INT >= 33 &&
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.POST_NOTIFICATIONS,
+                        ) != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        vm.start()
+                    }
+                },
             ) { Text("开始导航") }
             OutlinedButton(onClick = { vm.stop() }) { Text("结束") }
         }

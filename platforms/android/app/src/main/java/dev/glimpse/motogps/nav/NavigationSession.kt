@@ -3,6 +3,7 @@ package dev.glimpse.motogps.nav
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import dev.glimpse.motogps.BuildConfig
 import dev.glimpse.motogps.NativeBridge
 import dev.glimpse.motogps.ble.Esp32BleCentral
 import dev.glimpse.motogps.gateway.GatewayClient
@@ -65,6 +66,12 @@ class NavigationSession(
     private var lastGeometryKey: String? = null
     private var bleWasReady = false
     private var requestCounter = 0
+    private var hasLoggedFix = false
+
+    // Debug-only harness (BuildConfig.DEBUG): lets adb start a live navigation
+    // without touch input. Never enabled in release builds.
+    private var pendingDebugQuery: String? = null
+    private var autoStartAfterSearch = false
 
     init {
         location.start(
@@ -75,6 +82,16 @@ class NavigationSession(
                     accuracyM = fix.accuracyM,
                     speedMps = fix.speedMps,
                 )
+                if (!hasLoggedFix) {
+                    hasLoggedFix = true
+                    log("定位可用（${fix.provider}，${fix.accuracyM.roundToInt()} m）")
+                }
+                if (pendingDebugQuery != null && !navigating) {
+                    val query = pendingDebugQuery
+                    pendingDebugQuery = null
+                    search(query!!)
+                    autoStartAfterSearch = true
+                }
                 if (navigating) {
                     feedEngine(
                         engine.pushFix(
@@ -105,6 +122,13 @@ class NavigationSession(
             }.onSuccess { places ->
                 _state.value = _state.value.copy(places = places)
                 log("搜索到 ${places.size} 个地点")
+                if (autoStartAfterSearch) {
+                    autoStartAfterSearch = false
+                    places.firstOrNull { it.isWgs84 }?.let { place ->
+                        select(place)
+                        start()
+                    }
+                }
             }.onFailure { log("搜索失败：${it.message}") }
         }
     }
@@ -158,6 +182,22 @@ class NavigationSession(
         stop()
         location.stop()
         engine.close()
+    }
+
+    /**
+     * Debug harness only: search a destination and start navigation as soon as a
+     * usable fix exists. Used by `adb shell am start ... --es motoSearch 西湖`.
+     */
+    fun debugSearchAndStart(query: String) {
+        if (!BuildConfig.DEBUG) return
+        log("调试入口：搜索并导航「$query」")
+        if (lastFix != null) {
+            autoStartAfterSearch = true
+            search(query)
+        } else {
+            pendingDebugQuery = query
+            log("调试入口等待定位")
+        }
     }
 
     private fun feedEngine(result: EngineResult) {
