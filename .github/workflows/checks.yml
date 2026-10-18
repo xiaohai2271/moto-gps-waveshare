@@ -56,6 +56,37 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          submodules: recursive
           persist-credentials: false
       - name: Swift core tests (no signing or device)
         run: swift test --package-path platforms/ios
+
+  android:
+    # Community Android port. Builds the NDK/JNI shared core and runs the JVM
+    # unit tests; device/instrumented golden checks live in manual runs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install NDK and CMake
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "ndk;27.2.12479018" "cmake;3.22.1" "build-tools;36.0.0" "platforms;android-36"
+      - name: Build debug APK and unit tests
+        working-directory: platforms/android
+        run: |
+          ./gradlew assembleDebug testDebugUnitTest --no-daemon
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: motogps-debug-apk
+          path: platforms/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

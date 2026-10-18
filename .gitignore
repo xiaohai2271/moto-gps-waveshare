@@ -29,5 +29,18 @@ backups/
 *.elf
 *.map
 
+# Android
+platforms/android/.gradle/
+platforms/android/.gradle-home/
+platforms/android/build/
+platforms/android/app/build/
+platforms/android/local.properties
+platforms/android/.idea/
+platforms/android/captures/
+platforms/android/*-log.txt
+*.so
+
 # Local Cloudflare emulator state (also when tests run from the repository root)
 .wrangler/
+
+platforms/android/app/.cxx/
