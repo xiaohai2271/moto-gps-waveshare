@@ -60,6 +60,7 @@ class NavigationSession(
     private val location = GpsLocationSource(context)
     private val tileStore = dev.glimpse.motogps.map.MapTileStore(context, gateway)
     private val media = dev.glimpse.motogps.media.MediaControllerSource(context)
+    private val compass = dev.glimpse.motogps.location.CompassSource(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -85,6 +86,9 @@ class NavigationSession(
     private var lastSceneLat = 0.0
     private var lastSnapshotDiagAt = 0L
     private var lastMediaKey: String? = null
+    private var compassHeading: Double? = null
+    private var lastCompassPushAt = 0L
+    private var lastPageChangeAt = 0L
 
     init {
         central.commandListener = { command -> onDeviceCommand(command) }
@@ -98,6 +102,10 @@ class NavigationSession(
             onFix = { fix -> deliverFix(fix) },
             onFailure = { reason -> log("定位不可用：$reason") },
         )
+        val compassStarted = compass.start { degrees -> onCompassHeading(degrees) }
+        if (!compassStarted) {
+            log("罗盘传感器不可用：静止时航向来自 GPS（通常为 0）")
+        }
         scope.launch {
             central.state.collect { bleState ->
                 val ready = bleState is Esp32BleCentral.State.Connected
@@ -153,6 +161,13 @@ class NavigationSession(
     }
 
     private fun deliverFix(fix: GpsLocationSource.Fix) {
+        // While stationary the GNSS course is meaningless; use the phone
+        // compass so the round display's heading/compass page is meaningful.
+        val effective = if (fix.speedMps < 1.0 && compassHeading != null) {
+            fix.copy(headingDeg = compassHeading!!)
+        } else {
+            fix
+        }
         lastFix = fix
         _state.value = _state.value.copy(
             hasFix = true,
@@ -172,11 +187,31 @@ class NavigationSession(
         if (navigating) {
             feedEngine(
                 engine.pushFix(
-                    fix.longitude, fix.latitude, fix.accuracyM,
-                    fix.speedMps, fix.headingDeg, fix.timestampMs,
+                    effective.longitude, effective.latitude, effective.accuracyM,
+                    effective.speedMps, effective.headingDeg, effective.timestampMs,
                 ),
             )
         }
+    }
+
+    /**
+     * Compass updates push a heading-only fix at <=4 Hz while stationary so the
+     * display rotates smoothly without waiting for the next GNSS callback.
+     */
+    private fun onCompassHeading(degrees: Double) {
+        compassHeading = degrees
+        if (!navigating) return
+        val fix = lastFix ?: return
+        if (fix.speedMps >= 1.0) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastCompassPushAt < 250) return
+        lastCompassPushAt = now
+        feedEngine(
+            engine.pushFix(
+                fix.longitude, fix.latitude, fix.accuracyM,
+                0.0, degrees, System.currentTimeMillis(),
+            ),
+        )
     }
 
     /**
@@ -266,6 +301,11 @@ class NavigationSession(
             log("设备请求的页面 ${target} 暂不支持（音乐需先接入 MediaState）")
             return
         }
+        val current = engine.snapshot().displayPage
+        if (target == current) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPageChangeAt < PAGE_DEBOUNCE_MS) return
+        lastPageChangeAt = now
         runCatching { feedEngine(engine.selectPage(target)) }
             .onSuccess { log("切换圆屏页面 → $target") }
             .onFailure { log("切换页面失败：${it.message}") }
@@ -559,6 +599,7 @@ class NavigationSession(
             lastSnapshotDiagAt = now
             log(
                 "快照诊断 state=${snapshot.state} page=${snapshot.displayPage} flags=$flags " +
+                    "heading=${(snapshot.headingDeg * 100).roundToLong()} " +
                     "token=${numeric[6]} gen=${numeric[7]} " +
                     "dist=${numeric[9]} remain=${numeric[10]}",
             )
@@ -630,6 +671,7 @@ class NavigationSession(
         const val COMMAND_MUSIC_TOGGLE = 17
         const val COMMAND_MUSIC_NEXT = 18
         const val COMMAND_MUSIC_LIKE = 19
+        const val PAGE_DEBOUNCE_MS = 600L
         // 0 navigation, 1 speed, 2 compass, 3 music (remote control only).
         val SUPPORTED_PAGES = listOf(0, 1, 2, 3)
     }
