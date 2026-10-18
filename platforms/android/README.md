@@ -50,8 +50,8 @@ cd platforms/android
 | --- | --- |
 | `assembleDebug` | BUILD SUCCESSFUL |
 | `assembleDebugAndroidTest` | BUILD SUCCESSFUL |
-| `testDebugUnitTest` | **26 个测试通过**（协议常量、golden 结构、CRC、握手、队列、退避） |
-| `connectedDebugAndroidTest`（模拟器 API 36） | 2 个测试通过：JNI 编码与上游 golden **逐字节一致**；坐标转换 |
+| `testDebugUnitTest` | **39 个测试通过**（协议常量、golden 结构、CRC、握手、队列、退避、网关 JSON、瓦片算法） |
+| `connectedDebugAndroidTest`（Mi 10 真机） | **8/8 通过**：golden 字节、NavCore 桥、实时网关选路、实时瓦片下载、GCJ 反解、BLE 场景发送 |
 | 模拟器安装 + App 内自检 | PASS，6/6 向量 match（`docs/android-phase1-selfcheck.png`） |
 | **真机**：Xiaomi 14（23127PN0CC，Android 16） | 安装成功；扫描到 `MOTO GPS` 圆屏（RSSI -65 dBm，MAC 已省略） |
 | 真机 BLE 握手 | **通过**：MTU 185 → frameSize 182，能力 `0xff`，三步握手完成 |
