@@ -55,6 +55,7 @@ class NavigationSession(
 
     private val engine = NavEngine()
     private val location = GpsLocationSource(context)
+    private val tileStore = dev.glimpse.motogps.map.MapTileStore(context, gateway)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -72,35 +73,16 @@ class NavigationSession(
     // without touch input. Never enabled in release builds.
     private var pendingDebugQuery: String? = null
     private var autoStartAfterSearch = false
+    private var destinationLon: Double? = null
+    private var destinationLat: Double? = null
+    private var mapSceneRevision = 0L
+    private var lastSceneAtMs = 0L
+    private var lastSceneLon = 0.0
+    private var lastSceneLat = 0.0
 
     init {
         location.start(
-            onFix = { fix ->
-                lastFix = fix
-                _state.value = _state.value.copy(
-                    hasFix = true,
-                    accuracyM = fix.accuracyM,
-                    speedMps = fix.speedMps,
-                )
-                if (!hasLoggedFix) {
-                    hasLoggedFix = true
-                    log("定位可用（${fix.provider}，${fix.accuracyM.roundToInt()} m）")
-                }
-                if (pendingDebugQuery != null && !navigating) {
-                    val query = pendingDebugQuery
-                    pendingDebugQuery = null
-                    search(query!!)
-                    autoStartAfterSearch = true
-                }
-                if (navigating) {
-                    feedEngine(
-                        engine.pushFix(
-                            fix.longitude, fix.latitude, fix.accuracyM,
-                            fix.speedMps, fix.headingDeg, fix.timestampMs,
-                        ),
-                    )
-                }
-            },
+            onFix = { fix -> deliverFix(fix) },
             onFailure = { reason -> log("定位不可用：$reason") },
         )
         scope.launch {
@@ -114,8 +96,73 @@ class NavigationSession(
         }
     }
 
-    fun search(keywords: String) {
+    private fun deliverFix(fix: GpsLocationSource.Fix) {
+        lastFix = fix
+        _state.value = _state.value.copy(
+            hasFix = true,
+            accuracyM = fix.accuracyM,
+            speedMps = fix.speedMps,
+        )
+        if (!hasLoggedFix) {
+            hasLoggedFix = true
+            log("定位可用（${fix.provider}，${fix.accuracyM.roundToInt()} m）")
+        }
+        if (pendingDebugQuery != null && !navigating) {
+            val query = pendingDebugQuery
+            pendingDebugQuery = null
+            search(query!!)
+            autoStartAfterSearch = true
+        }
+        if (navigating) {
+            feedEngine(
+                engine.pushFix(
+                    fix.longitude, fix.latitude, fix.accuracyM,
+                    fix.speedMps, fix.headingDeg, fix.timestampMs,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Debug-only: injects a clearly labelled simulated position so the full
+     * hardware path can be exercised without a GNSS fix (indoors). Never used
+     * by the release UI, and the log states it is simulated.
+     */
+    fun debugSimulatedFix(lon: Double, lat: Double) {
+        if (!BuildConfig.DEBUG) return
+        log("调试：注入模拟定位（非真实 GPS）$lat,$lon")
+        deliverFix(
+            GpsLocationSource.Fix(
+                longitude = lon,
+                latitude = lat,
+                accuracyM = 5.0,
+                speedMps = 0.0,
+                headingDeg = 0.0,
+                timestampMs = System.currentTimeMillis(),
+                provider = "simulated",
+            ),
+        )
+    }
+
+    /** Debug-only: pre-cache tiles around a GCJ-02 position for MapScene tests. */
+    fun debugPrefetch(lon: Double, lat: Double) {
+        if (!BuildConfig.DEBUG) return
         scope.launch {
+            val gcj = NativeBridge.wgs84ToGcj02(lon, lat)
+            if (gcj[2] == 0.0) return@launch
+            val tiles = runCatching {
+                dev.glimpse.motogps.map.MapTilePlanner.aroundGcj02(gcj[1], gcj[0], 500.0)
+            }.getOrElse { return@launch }
+            log("调试：预取 ${tiles.size} 个瓦片")
+            runCatching {
+                tileStore.download("调试预取", "debug-prefetch", tiles)
+            }.onSuccess { pack ->
+                log("调试：预取完成 ${pack.tiles.size} 瓦片")
+            }.onFailure { log("调试：预取失败 ${it.message}") }
+        }
+    }
+
+    fun search(keywords: String) {        scope.launch {
             runCatching {
                 val fix = lastFix
                 gateway.searchPlaces(keywords, fix?.let { it.longitude to it.latitude })
@@ -152,6 +199,8 @@ class NavigationSession(
             return
         }
         navigating = true
+        destinationLon = place.longitude
+        destinationLat = place.latitude
         _state.value = _state.value.copy(status = "规划中", places = emptyList())
         log("开始导航：${place.name}")
         val result = engine.beginNavigation(place.longitude, place.latitude)
@@ -203,14 +252,50 @@ class NavigationSession(
     private fun feedEngine(result: EngineResult) {
         try {
             result.commands.forEach { command ->
-                if (command.isRequestRoute) requestRoute(command) else {
-                    log("暂不支持的命令 type=${command.type}")
+                when {
+                    command.isRequestRoute -> requestRoute(command)
+                    command.type == EngineCommand.TYPE_REQUEST_TRAFFIC -> requestTraffic(command)
+                    else -> log("暂不支持的命令 type=${command.type}")
                 }
             }
             publish(result.snapshot)
         } catch (error: Throwable) {
             // A protocol/JNI rejection must degrade to a status line, not a crash.
             log("导航核心处理失败：${error.message}")
+        }
+    }
+
+    /**
+     * Traffic refresh reuses /v1/routes (the gateway has no traffic-only
+     * endpoint) and feeds the bundle's segments back into NavCore.
+     */
+    private fun requestTraffic(command: EngineCommand) {
+        val fix = lastFix ?: return
+        val lon = destinationLon ?: return
+        val lat = destinationLat ?: return
+        val route = _state.value.route ?: return
+        scope.launch {
+            runCatching {
+                gateway.planRoute(
+                    command.requestId,
+                    fix.longitude, fix.latitude, lon, lat,
+                    false, route.routeId,
+                )
+            }.onSuccess { refreshed ->
+                val segments = refreshed.traffic.map {
+                    Triple(it.startOffsetM, it.endOffsetM, it.level)
+                }
+                runCatching {
+                    feedEngine(
+                        engine.acceptTraffic(
+                            command.requestId, refreshed.routeId,
+                            refreshed.totalDurationS.toInt(),
+                            System.currentTimeMillis(), segments,
+                        ),
+                    )
+                    _state.value = _state.value.copy(route = refreshed)
+                }.onFailure { log("路况应用失败：${it.message}") }
+            }.onFailure { log("路况刷新失败：${it.message}") }
         }
     }
 
@@ -268,6 +353,55 @@ class NavigationSession(
         lastSnapshotAt = now
         sendSnapshot(snapshot)
         sendGeometryIfChanged(snapshot)
+        maybeSendMapScene()
+    }
+
+    /**
+     * Sends a bounded MapScene from cached tiles when the rider has moved
+     * >100 m. Origin conversion WGS84 -> GCJ-02 happens exactly once, here,
+     * because tile geometry is already GCJ-02.
+     */
+    private fun maybeSendMapScene() {
+        if (!_state.value.bleReady || _state.value.route == null) return
+        val fix = lastFix ?: return
+        val now = SystemClock.elapsedRealtime()
+        val moved = haversineM(lastSceneLon, lastSceneLat, fix.longitude, fix.latitude)
+        if (lastSceneAtMs != 0L && moved < SCENE_MIN_MOVE_M && now - lastSceneAtMs < 30_000) return
+
+        val gcj = NativeBridge.wgs84ToGcj02(fix.longitude, fix.latitude)
+        if (gcj[2] == 0.0) return
+        val tiles = runCatching {
+            dev.glimpse.motogps.map.MapTilePlanner.aroundGcj02(gcj[1], gcj[0], SCENE_RADIUS_M.toDouble())
+        }.getOrElse { return }
+        val cached = tiles.map { tileStore.tileFile(it) }.filter { it.exists() }
+        if (cached.isEmpty()) {
+            logOnce("附近没有已缓存的离线瓦片，圆屏小地图暂不发送")
+            return
+        }
+        mapSceneRevision += 1
+        val scene = dev.glimpse.motogps.map.MapSceneBuilder.build(
+            mapSceneRevision, gcj[0], gcj[1], SCENE_RADIUS_M, cached,
+        ) ?: return
+        if (central.sendMapScene(scene.revision, scene.encoded)) {
+            lastSceneAtMs = now
+            lastSceneLon = fix.longitude
+            lastSceneLat = fix.latitude
+            log(
+                "已发送地图场景 rev=${scene.revision}（${scene.roads.size} 路 / " +
+                    "${scene.buildings.size} 建筑，${cached.size} 瓦片）",
+            )
+        }
+    }
+
+    private fun haversineM(lon1: Double, lat1: Double, lon2: Double, lat2: Double): Double {
+        if (lon1 == 0.0 && lat1 == 0.0) return Double.MAX_VALUE
+        val r = 6_371_000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val h = kotlin.math.sin(dLat / 2) * kotlin.math.sin(dLat / 2) +
+            kotlin.math.cos(Math.toRadians(lat1)) * kotlin.math.cos(Math.toRadians(lat2)) *
+            kotlin.math.sin(dLon / 2) * kotlin.math.sin(dLon / 2)
+        return 2 * r * kotlin.math.asin(kotlin.math.sqrt(h))
     }
 
     private fun sendSnapshot(snapshot: EngineSnapshot) {
@@ -364,5 +498,7 @@ class NavigationSession(
         const val TAG = "MotoGpsNav"
         const val SNAPSHOT_INTERVAL_MS = 200L
         const val MAX_POINTS_PER_CHUNK = 24
+        const val SCENE_RADIUS_M = 500
+        const val SCENE_MIN_MOVE_M = 100.0
     }
 }

@@ -20,6 +20,8 @@ interface BleTransport {
         fun onWriteComplete(success: Boolean)
         fun onDisconnected(reason: String?)
         fun onError(message: String)
+        /** Non-fatal transport anomaly (kept for logging only). */
+        fun onWarning(message: String) {}
     }
 
     val connectedAddress: String?

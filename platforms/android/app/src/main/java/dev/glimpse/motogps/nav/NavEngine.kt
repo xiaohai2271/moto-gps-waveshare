@@ -139,6 +139,26 @@ class NavEngine : AutoCloseable {
     fun rejectRoute(requestId: Int, retryable: Boolean, receivedAtMs: Long): EngineResult =
         parse(NativeBridge.navRejectRoute(handle, requestId, retryable, receivedAtMs))
 
+    fun acceptTraffic(
+        requestId: Int,
+        routeId: String,
+        remainingDurationS: Int,
+        observedAtMs: Long,
+        segments: List<Triple<Double, Double, Int>>,
+    ): EngineResult {
+        val flat = DoubleArray(segments.size * 3)
+        segments.forEachIndexed { i, (start, end, level) ->
+            flat[i * 3] = start
+            flat[i * 3 + 1] = end
+            flat[i * 3 + 2] = level.toDouble()
+        }
+        return parse(
+            NativeBridge.navAcceptTraffic(
+                handle, requestId, routeId, remainingDurationS, observedAtMs, flat,
+            ),
+        )
+    }
+
     override fun close() {
         if (handle != 0L) {
             NativeBridge.navDestroy(handle)

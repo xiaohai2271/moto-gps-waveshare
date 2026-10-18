@@ -968,4 +968,127 @@ Java_dev_glimpse_motogps_NativeBridge_encodeRouteGeometry(
   return MakeJByteArray(env, result.value);
 }
 
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navAcceptTraffic(
+    JNIEnv* env, jclass /*clazz*/, jlong handle, jint request_id,
+    jstring route_id, jint remaining_duration_s, jlong observed_at_ms,
+    jdoubleArray segments) {
+  moto::nav::TrafficSnapshot traffic;
+  if (route_id != nullptr) {
+    const char* text = env->GetStringUTFChars(route_id, nullptr);
+    traffic.route_id = text != nullptr ? text : "";
+    if (text != nullptr) env->ReleaseStringUTFChars(route_id, text);
+  }
+  traffic.remaining_duration_s =
+      static_cast<std::uint32_t>(remaining_duration_s);
+  traffic.observed_at_ms = static_cast<std::uint64_t>(observed_at_ms);
+  if (segments != nullptr) {
+    const jsize count = env->GetArrayLength(segments);
+    std::vector<double> values(static_cast<std::size_t>(count));
+    env->GetDoubleArrayRegion(segments, 0, count, values.data());
+    for (jsize i = 0; i + 2 < count; i += 3) {
+      traffic.segments.push_back(
+          {values[i], values[i + 1],
+           static_cast<moto::nav::TrafficLevel>(static_cast<int>(values[i + 2]))});
+    }
+  }
+  moto::nav::TrafficUpdated event;
+  event.request_id = static_cast<std::uint32_t>(request_id);
+  event.traffic = std::move(traffic);
+  return NavEventResult(env, handle, NavEvent{std::move(event)});
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeMapScene(
+    JNIEnv* env, jclass /*clazz*/, jlongArray meta, jintArray road_classes,
+    jintArray road_ranges, jdoubleArray road_points, jintArray building_classes,
+    jintArray building_ranges, jdoubleArray building_points) {
+  if (meta == nullptr || env->GetArrayLength(meta) < 4) {
+    Throw(env, "map scene meta missing", moto::ble::Error::InvalidArgument);
+    return nullptr;
+  }
+  jlong m[4];
+  env->GetLongArrayRegion(meta, 0, 4, m);
+  moto::ble::MapScene scene;
+  scene.coordinate_system = moto::ble::CoordinateSystem::Gcj02;
+  scene.scene_revision = static_cast<std::uint32_t>(m[0]);
+  scene.view_origin = {static_cast<std::int32_t>(m[1]),
+                       static_cast<std::int32_t>(m[2])};
+  scene.radius_m = static_cast<std::uint16_t>(m[3]);
+
+  auto read_points = [env](jdoubleArray array) {
+    std::vector<std::pair<double, double>> out;
+    if (array == nullptr) return out;
+    const jsize count = env->GetArrayLength(array);
+    std::vector<double> values(static_cast<std::size_t>(count));
+    env->GetDoubleArrayRegion(array, 0, count, values.data());
+    for (jsize i = 0; i + 1 < count; i += 2) {
+      out.emplace_back(values[i + 1], values[i]);  // lat, lon
+    }
+    return out;
+  };
+
+  if (road_classes != nullptr && road_ranges != nullptr) {
+    const jsize ranges = env->GetArrayLength(road_ranges);
+    std::vector<int> range_values(static_cast<std::size_t>(ranges));
+    env->GetIntArrayRegion(road_ranges, 0, ranges, range_values.data());
+    const jsize classes = env->GetArrayLength(road_classes);
+    std::vector<int> class_values(static_cast<std::size_t>(classes));
+    env->GetIntArrayRegion(road_classes, 0, classes, class_values.data());
+    const auto points = read_points(road_points);
+    for (jsize i = 0; i + 1 < ranges && i / 2 < classes; i += 2) {
+      const int start = range_values[i];
+      const int count = range_values[i + 1];
+      if (start < 0 || count < 2 ||
+          start + count > static_cast<int>(points.size())) {
+        continue;
+      }
+      moto::ble::MapRoadPolyline road;
+      road.road_class = static_cast<moto::ble::MapRoadClass>(class_values[i / 2]);
+      for (int p = 0; p < count; ++p) {
+        const auto& point = points[static_cast<std::size_t>(start + p)];
+        road.points.push_back(
+            {static_cast<std::int32_t>(std::llround(point.first * 1e6)),
+             static_cast<std::int32_t>(std::llround(point.second * 1e6))});
+      }
+      scene.roads.push_back(std::move(road));
+    }
+  }
+
+  if (building_classes != nullptr && building_ranges != nullptr) {
+    const jsize ranges = env->GetArrayLength(building_ranges);
+    std::vector<int> range_values(static_cast<std::size_t>(ranges));
+    env->GetIntArrayRegion(building_ranges, 0, ranges, range_values.data());
+    const jsize classes = env->GetArrayLength(building_classes);
+    std::vector<int> class_values(static_cast<std::size_t>(classes));
+    env->GetIntArrayRegion(building_classes, 0, classes, class_values.data());
+    const auto points = read_points(building_points);
+    for (jsize i = 0; i + 1 < ranges && i / 2 < classes; i += 2) {
+      const int start = range_values[i];
+      const int count = range_values[i + 1];
+      if (start < 0 || count < 3 ||
+          start + count > static_cast<int>(points.size())) {
+        continue;
+      }
+      moto::ble::MapBuildingFootprint building;
+      building.building_class =
+          static_cast<moto::ble::MapBuildingClass>(class_values[i / 2]);
+      for (int p = 0; p < count; ++p) {
+        const auto& point = points[static_cast<std::size_t>(start + p)];
+        building.points.push_back(
+            {static_cast<std::int32_t>(std::llround(point.first * 1e6)),
+             static_cast<std::int32_t>(std::llround(point.second * 1e6))});
+      }
+      scene.buildings.push_back(std::move(building));
+    }
+  }
+
+  const BytesResult result = Encode(Message{scene});
+  if (!result.ok()) {
+    Throw(env, "encode map scene failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
+}
+
 }  // extern "C"

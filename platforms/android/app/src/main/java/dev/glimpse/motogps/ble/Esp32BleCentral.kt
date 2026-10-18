@@ -72,6 +72,9 @@ class Esp32BleCentral(
     private var heartbeatIntervalMs = BleProtocol.DEFAULT_HEARTBEAT_INTERVAL_MS
     private var pumpScheduled = false
     private var tickerRunning = false
+    private var pendingSceneRevision = 0L
+    private var sceneAttempts = 0
+    private var lastSceneEncoded: ByteArray? = null
 
     private val heartbeatTicker = object : Runnable {
         override fun run() {
@@ -111,6 +114,10 @@ class Esp32BleCentral(
         main.removeCallbacksAndMessages(null)
         tickerRunning = false
         pumpScheduled = false
+        pendingSceneRevision = 0
+        sceneAttempts = 0
+        lastSceneEncoded = null
+        main.removeCallbacks(sceneTimeout)
         handshakeAttempts = 0
         lastValidFrameAtMs = 0
         handshake.onTransportLost()
@@ -166,6 +173,54 @@ class Esp32BleCentral(
         return true
     }
 
+    /**
+     * Sends a MapScene and waits for the device ACK (3 s, up to 3 attempts).
+     * Only one scene is pending at a time; a newer revision supersedes it.
+     */
+    fun sendMapScene(revision: Long, encoded: ByteArray): Boolean {
+        if (_state.value !is State.Connected) return false
+        pendingSceneRevision = revision
+        sceneAttempts = 1
+        lastSceneEncoded = encoded
+        fragmentScene(encoded)
+        scheduleSceneTimeout()
+        return true
+    }
+
+    private fun fragmentScene(encoded: ByteArray) {
+        val frames = runCatching {
+            codec.fragment(
+                BleProtocol.MessageType.MAP_SCENE, nextSequence(), encoded,
+                currentFrameSize(), BleProtocol.Flags.ACK_REQUESTED,
+            )
+        }.getOrElse {
+            logLine("地图场景分片失败：${it.message}")
+            return
+        }
+        outbound.enqueueMessage(frames, "map-scene")
+        schedulePump()
+    }
+
+    private fun scheduleSceneTimeout() {
+        main.removeCallbacks(sceneTimeout)
+        main.postDelayed(sceneTimeout, SCENE_ACK_TIMEOUT_MS)
+    }
+
+    private val sceneTimeout = object : Runnable {
+        override fun run() {
+            if (pendingSceneRevision == 0L) return
+            if (sceneAttempts >= MAX_SCENE_ATTEMPTS) {
+                logLine("地图场景未确认，放弃本轮（revision=$pendingSceneRevision）")
+                pendingSceneRevision = 0
+                return
+            }
+            logLine("地图场景 ACK 超时，重发（第 ${sceneAttempts + 1} 次）")
+            sceneAttempts += 1
+            lastSceneEncoded?.let { fragmentScene(it) }
+            main.postDelayed(this, SCENE_ACK_TIMEOUT_MS)
+        }
+    }
+
     // --- BleTransport.Listener -------------------------------------------
 
     override fun onBluetoothUnavailable(reason: String) {
@@ -211,6 +266,19 @@ class Esp32BleCentral(
 
     override fun onNotification(value: ByteArray) {
         lastValidFrameAtMs = now()
+        // Some OEM stacks report the CCCD write as failed although
+        // notifications are already flowing. If a frame arrives before the
+        // handshake started, start the session from here.
+        if (handshake.phase == HandshakeMachine.Phase.Idle &&
+            (_state.value is State.Connecting || _state.value is State.Failed)
+        ) {
+            logLine("收到通知但握手未启动，补启动会话")
+            val sessionId = generateSessionId()
+            handshakeAttempts = 0
+            lastHandshakeResendAtMs = now()
+            handleIntent(handshake.start(sessionId, now()))
+            startTicker()
+        }
         when (val reassembled = codec.pushFrame(value, now())) {
             is MotoBleCodec.Reassembly.Complete -> onCompleteMessage(reassembled)
             is MotoBleCodec.Reassembly.Duplicate -> {
@@ -252,6 +320,10 @@ class Esp32BleCentral(
         _state.value = State.Failed(message)
     }
 
+    override fun onWarning(message: String) {
+        logLine("警告：$message")
+    }
+
     // --- internals --------------------------------------------------------
 
     private fun onCompleteMessage(message: MotoBleCodec.Reassembly.Complete) {
@@ -268,6 +340,13 @@ class Esp32BleCentral(
             BleProtocol.MessageType.ACK -> {
                 val ack = runCatching { codec.decodeAck(message.payload) }.getOrNull() ?: return
                 logLine("ACK seq=${ack.acknowledgedSequence} status=${ack.status}")
+                if (pendingSceneRevision != 0L && (ack.status == 0 || ack.status == 4)) {
+                    val revision = pendingSceneRevision
+                    pendingSceneRevision = 0
+                    main.removeCallbacks(sceneTimeout)
+                    lastSceneEncoded = null
+                    logLine("地图场景已确认 revision=$revision")
+                }
             }
 
             BleProtocol.MessageType.DEVICE_COMMAND -> {
@@ -462,6 +541,7 @@ class Esp32BleCentral(
         (Random.nextLong(1, 0xFFFFFFFFL))
 
     private fun logLine(line: String) {
+        android.util.Log.i("MotoGpsBle", line)
         val stamped = "${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())}  $line"
         _log.value = (_log.value + stamped).takeLast(200)
     }
@@ -470,6 +550,8 @@ class Esp32BleCentral(
         const val SCAN_DURATION_MS = 20_000L
         const val DEVICE_TIMEOUT_MS = 5_000L
         const val MAX_HANDSHAKE_ATTEMPTS = 5
+        const val SCENE_ACK_TIMEOUT_MS = 3_000L
+        const val MAX_SCENE_ATTEMPTS = 3
         const val STATUS_OK = 0
     }
 }

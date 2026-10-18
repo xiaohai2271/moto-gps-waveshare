@@ -50,6 +50,8 @@ class AndroidBleTransport(
     private var scanning = false
     private val writeQueue = ArrayDeque<Pair<ByteArray, Boolean>>()
     private var writeInFlight = false
+    private var writeWatchdog: Runnable? = null
+    private var writeRetries = 0
     private var pendingMtu = 23
     private var discoverFallback: Runnable? = null
 
@@ -150,16 +152,7 @@ class AndroidBleTransport(
                     listener.onError("CCCD missing")
                     return@post
                 }
-                val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
-                        BluetoothGatt.GATT_SUCCESS
-                } else {
-                    @Suppress("DEPRECATION")
-                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    @Suppress("DEPRECATION")
-                    gatt.writeDescriptor(cccd)
-                }
-                if (!started) listener.onError("cannot write CCCD")
+                writeCccd(gatt, cccd, attempt = 0)
             }
         }
 
@@ -201,11 +194,35 @@ class AndroidBleTransport(
             status: Int,
         ) {
             handler.post {
+                writeWatchdog?.let { handler.removeCallbacks(it) }
+                writeWatchdog = null
+                android.util.Log.d("MotoGpsGatt", "write callback status=$status")
                 writeInFlight = false
                 listener.onWriteComplete(status == BluetoothGatt.GATT_SUCCESS)
                 pumpWrites()
             }
         }
+    }
+
+    private fun writeCccd(gatt: BluetoothGatt, cccd: BluetoothGattDescriptor, attempt: Int) {
+        val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
+                BluetoothGatt.GATT_SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            gatt.writeDescriptor(cccd)
+        }
+        if (started) return
+        if (attempt >= CCCD_MAX_ATTEMPTS) {
+            listener.onWarning("CCCD write rejected; waiting for notifications")
+            return
+        }
+        // Retry: a rejected descriptor write often means the stack is still busy
+        // processing discovery. Notifications confirm readiness either way.
+        android.util.Log.w("MotoGpsGatt", "CCCD write rejected, retry ${attempt + 1}")
+        handler.postDelayed({ writeCccd(gatt, cccd, attempt + 1) }, CCCD_RETRY_DELAY_MS)
     }
 
     private fun discoverServices(gatt: BluetoothGatt) {
@@ -343,9 +360,30 @@ class AndroidBleTransport(
             @Suppress("DEPRECATION")
             current.writeCharacteristic(rx)
         }
-        if (!submitted) {
+        android.util.Log.d("MotoGpsGatt", "write ${frame.size}B withResponse=$withResponse submitted=$submitted")
+        if (submitted) {
+            writeRetries = 0
+            // Some OEM stacks never deliver onCharacteristicWrite for
+            // write-without-response; do not let that wedge the queue.
+            writeWatchdog?.let { handler.removeCallbacks(it) }
+            writeWatchdog = Runnable {
+                if (writeInFlight) {
+                    android.util.Log.w("MotoGpsGatt", "write callback timeout; continuing")
+                    writeInFlight = false
+                    pumpWrites()
+                }
+            }.also { handler.postDelayed(it, WRITE_TIMEOUT_MS) }
+        } else {
             writeInFlight = false
-            listener.onWriteComplete(false)
+            if (writeRetries < WRITE_MAX_RETRIES) {
+                writeRetries += 1
+                writeQueue.addFirst(next)
+                android.util.Log.w("MotoGpsGatt", "write rejected, retry $writeRetries")
+                handler.postDelayed({ pumpWrites() }, WRITE_RETRY_DELAY_MS)
+            } else {
+                writeRetries = 0
+                listener.onWriteComplete(false)
+            }
         }
     }
 
@@ -365,5 +403,13 @@ class AndroidBleTransport(
         stopScan()
         cleanupGatt()
         handler.removeCallbacksAndMessages(null)
+    }
+
+    private companion object {
+        const val WRITE_TIMEOUT_MS = 300L
+        const val WRITE_RETRY_DELAY_MS = 250L
+        const val WRITE_MAX_RETRIES = 5
+        const val CCCD_RETRY_DELAY_MS = 300L
+        const val CCCD_MAX_ATTEMPTS = 3
     }
 }

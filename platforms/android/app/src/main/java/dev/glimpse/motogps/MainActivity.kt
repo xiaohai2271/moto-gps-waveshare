@@ -32,6 +32,14 @@ class MainActivity : ComponentActivity() {
         if (BuildConfig.DEBUG) {
             val app = application as MotoGpsApplication
             intent?.getStringExtra("motoMac")?.let { app.bleCentral.connect(it) }
+            intent?.getStringExtra("motoPrefetch")?.let { value ->
+                val parts = value.split(",").mapNotNull { it.trim().toDoubleOrNull() }
+                if (parts.size == 2) app.navigationSession.debugPrefetch(parts[0], parts[1])
+            }
+            intent?.getStringExtra("motoFix")?.let { value ->
+                val parts = value.split(",").mapNotNull { it.trim().toDoubleOrNull() }
+                if (parts.size == 2) app.navigationSession.debugSimulatedFix(parts[0], parts[1])
+            }
             intent?.getStringExtra("motoSearch")?.let { app.navigationSession.debugSearchAndStart(it) }
         }
 
@@ -47,6 +55,8 @@ class MainActivity : ComponentActivity() {
 private fun AppScaffold(fixture: Map<String, String>) {
     var tab by remember { mutableIntStateOf(0) }
     val titles = listOf("导航", "地图", "圆屏连接", "协议自检")
+    // Icon per tab; getOrElse keeps this safe if a tab is added later.
+    val icons = listOf("➤", "▦", "◎", "✓")
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -54,7 +64,7 @@ private fun AppScaffold(fixture: Map<String, String>) {
                     NavigationBarItem(
                         selected = tab == index,
                         onClick = { tab = index },
-                        icon = { Text(listOf("➤", "◎", "✓")[index]) },
+                        icon = { Text(icons.getOrElse(index) { "•" }) },
                         label = { Text(title) },
                     )
                 }

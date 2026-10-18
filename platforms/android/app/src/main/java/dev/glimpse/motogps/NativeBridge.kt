@@ -120,6 +120,15 @@ object NativeBridge {
         receivedAtMs: Long,
     ): String
 
+    external fun navAcceptTraffic(
+        handle: Long,
+        requestId: Int,
+        routeId: String,
+        remainingDurationS: Int,
+        observedAtMs: Long,
+        segments: DoubleArray,
+    ): String
+
     // --- BLE display encoders ---
 
     external fun bleRouteToken(routeId: String): Long
@@ -142,4 +151,19 @@ object NativeBridge {
      * chunkCount, firstPointIndex, totalPointCount, originLatE6, originLonE6
      */
     external fun encodeRouteGeometry(meta: LongArray, pointsLonLat: DoubleArray): ByteArray
+
+    /**
+     * meta[4] = sceneRevision, originLatE6, originLonE6, radiusM.
+     * roadRanges / buildingRanges are (startIndex, pointCount) pairs into the
+     * corresponding interleaved lon/lat arrays.
+     */
+    external fun encodeMapScene(
+        meta: LongArray,
+        roadClasses: IntArray,
+        roadRanges: IntArray,
+        roadPointsLonLat: DoubleArray,
+        buildingClasses: IntArray,
+        buildingRanges: IntArray,
+        buildingPointsLonLat: DoubleArray,
+    ): ByteArray
 }

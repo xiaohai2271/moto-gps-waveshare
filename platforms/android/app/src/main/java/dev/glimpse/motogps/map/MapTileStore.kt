@@ -112,15 +112,23 @@ class MapTileStore(
 
     private suspend fun fetchWithRetry(tile: MapTilePlanner.TileId): Boolean {
         repeat(MAX_ATTEMPTS) { attempt ->
-            val body = runCatching { gateway.fetchTile(tile) }.getOrNull()
+            val body = runCatching { gateway.fetchTile(tile) }
+                .onFailure {
+                    android.util.Log.w("MotoGpsMap", "tile $tile attempt ${attempt + 1}: ${it.message}")
+                }
+                .getOrNull()
             if (body != null && body.toByteArray().size <= MAX_TILE_BYTES) {
                 val valid = runCatching {
                     GatewayJson.validateTile(body, tile.z, tile.x, tile.y)
+                }.onFailure {
+                    android.util.Log.w("MotoGpsMap", "tile $tile invalid: ${it.message}")
                 }.isSuccess
                 if (valid) {
                     tileFile(tile).writeText(body)
                     return true
                 }
+            } else if (body != null) {
+                android.util.Log.w("MotoGpsMap", "tile $tile too large: ${body.length}")
             }
             delay(1_000L * (attempt + 1))
         }

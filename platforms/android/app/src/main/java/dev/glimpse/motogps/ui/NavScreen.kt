@@ -170,7 +170,8 @@ fun NavScreen(modifier: Modifier = Modifier, vm: NavViewModel = viewModel()) {
             }
         }
         Text(
-            "路线来自自建网关，几何为 GCJ-02；定位输入为 WGS84。未接入路况刷新与地图下载。",
+            "路线来自自建网关，几何为 GCJ-02；定位输入为 WGS84。地图页可下载离线瓦片，" +
+                "导航中按位置发送小地图场景。",
             style = MaterialTheme.typography.bodySmall,
         )
     }
