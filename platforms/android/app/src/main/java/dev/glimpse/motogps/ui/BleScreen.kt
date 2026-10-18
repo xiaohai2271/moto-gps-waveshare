@@ -38,6 +38,7 @@ fun BleScreen(modifier: Modifier = Modifier, vm: BleViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     val devices by vm.devices.collectAsState()
     val log by vm.log.collectAsState()
+    val navState by vm.navState.collectAsState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -70,6 +71,29 @@ fun BleScreen(modifier: Modifier = Modifier, vm: BleViewModel = viewModel()) {
                     OutlinedButton(onClick = { vm.disconnect() }) { Text("断开") }
                 }
                 else -> Unit
+            }
+        }
+
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "音乐遥控：" + when {
+                        !navState.mediaAccess -> "未授权通知使用权"
+                        navState.mediaConnected -> "已连接 · ${navState.mediaTitle}"
+                        else -> "已授权，无播放器"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "只控制系统媒体会话，不播放声音、不使用无障碍权限",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            OutlinedButton(onClick = { vm.openMediaAccessSettings() }) {
+                Text("授权")
             }
         }
 

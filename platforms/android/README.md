@@ -111,8 +111,10 @@ cd platforms/android
 | NavApp JNI：begin/fix/tick/accept/reject/snapshot | 已实现；Mi 10 仪器测试 **通过** |
 | NavigationSnapshot 5 Hz、RouteGeometry 分块（带 ACK） | 真机 **通过**，几何 ACK=Ok |
 | 圆屏实际渲染导航画面 | **真机通过**：圆屏由 READY 进入导航（2026-10-18 23:24） |
-| 前台服务（location + connectedDevice）与结束通知 | 已实现，**锁屏时长未实测** |
+| 前台服务（location + connectedDevice）与结束通知 | 已实现；**熄屏 90 s 实测**：进程存活、FGS 常驻、5 Hz 快照持续写入 |
 | 偏航重算、路况刷新 | 已实现（路况复用 /v1/routes 并回灌 NavCore），**未实车验证** |
+| 设备手势切页（滑动/选页） | 已实现；真机通过（page 0/1/2 切换） |
+| 音乐遥控（MediaState + 播放/上一首/下一首） | 已实现（系统媒体会话 + 通知使用权，无无障碍）；**待播放器实测** |
 
 ### 阶段四（离线地图）— 已实现并测试
 

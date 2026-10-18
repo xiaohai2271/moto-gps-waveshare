@@ -50,12 +50,16 @@ class NavigationSession(
         val distanceToManeuverM: Double = 0.0,
         val speedMps: Double = 0.0,
         val bleReady: Boolean = false,
+        val mediaAccess: Boolean = false,
+        val mediaConnected: Boolean = false,
+        val mediaTitle: String = "",
         val log: List<String> = emptyList(),
     )
 
     private val engine = NavEngine()
     private val location = GpsLocationSource(context)
     private val tileStore = dev.glimpse.motogps.map.MapTileStore(context, gateway)
+    private val media = dev.glimpse.motogps.media.MediaControllerSource(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -80,9 +84,16 @@ class NavigationSession(
     private var lastSceneLon = 0.0
     private var lastSceneLat = 0.0
     private var lastSnapshotDiagAt = 0L
+    private var lastMediaKey: String? = null
 
     init {
         central.commandListener = { command -> onDeviceCommand(command) }
+        scope.launch {
+            while (true) {
+                delay(1_000)
+                pushMediaState()
+            }
+        }
         location.start(
             onFix = { fix -> deliverFix(fix) },
             onFailure = { reason -> log("定位不可用：$reason") },
@@ -96,6 +107,49 @@ class NavigationSession(
                 bleWasReady = ready
             }
         }
+    }
+
+    /** Pushes MediaState at 1 Hz; harmless when no session or no capability. */
+    private fun pushMediaState() {
+        val snapshot = runCatching { media.snapshot() }.getOrNull() ?: return
+        val access = media.hasAccess()
+        _state.value = _state.value.copy(
+            mediaAccess = access,
+            mediaConnected = snapshot.connected,
+            mediaTitle = snapshot.trackTitle,
+        )
+        val flags = (if (snapshot.connected) 1 else 0) or (if (snapshot.playing) 2 else 0)
+        val key = "${snapshot.connected}/${snapshot.playing}/${snapshot.trackTitle}"
+        if (key != lastMediaKey) {
+            lastMediaKey = key
+            log(
+                when {
+                    !access -> "媒体：未授予通知使用权"
+                    !snapshot.connected -> "媒体：已授权，当前没有播放器"
+                    else -> "媒体：${snapshot.trackTitle} — ${snapshot.artistName}" +
+                        if (snapshot.playing) "（播放中）" else "（暂停）"
+                },
+            )
+        }
+        central.sendMediaState(
+            flags, snapshot.trackToken, snapshot.positionS, snapshot.durationS,
+            snapshot.sourceName, snapshot.trackTitle, snapshot.artistName,
+        )
+    }
+
+    fun hasMediaAccess(): Boolean = media.hasAccess()
+
+    fun openMediaAccessSettings() = media.openAccessSettings()
+
+    /** Debug-only: exercise the media transport from adb. */
+    fun debugMediaAction(action: String) {
+        if (!BuildConfig.DEBUG) return
+        when (action) {
+            "next" -> log("调试媒体：下一首 ${media.next()}")
+            "prev" -> log("调试媒体：上一首 ${media.previous()}")
+            "toggle" -> log("调试媒体：播放/暂停 ${media.toggle()}")
+        }
+        pushMediaState()
     }
 
     private fun deliverFix(fix: GpsLocationSource.Fix) {
@@ -171,6 +225,30 @@ class NavigationSession(
      * device never lands on an empty music page.
      */
     private fun onDeviceCommand(command: dev.glimpse.motogps.ble.RemoteCommand) {
+        when (command.kind) {
+            COMMAND_MUSIC_PREVIOUS -> {
+                val ok = media.previous()
+                log(if (ok) "圆屏按键：上一首" else "上一首失败（无媒体会话或未授权）")
+                pushMediaState()
+                return
+            }
+            COMMAND_MUSIC_TOGGLE -> {
+                val ok = media.toggle()
+                log(if (ok) "圆屏按键：播放/暂停" else "播放控制失败（无媒体会话或未授权）")
+                pushMediaState()
+                return
+            }
+            COMMAND_MUSIC_NEXT -> {
+                val ok = media.next()
+                log(if (ok) "圆屏按键：下一首" else "下一首失败（无媒体会话或未授权）")
+                pushMediaState()
+                return
+            }
+            COMMAND_MUSIC_LIKE -> {
+                log("圆屏按键：喜欢（协议支持，但 Android 无通用点赞接口，已忽略）")
+                return
+            }
+        }
         val pages = SUPPORTED_PAGES
         val target = when (command.kind) {
             COMMAND_PAGE_SELECTED -> command.page
@@ -548,7 +626,11 @@ class NavigationSession(
         const val COMMAND_PAGE_SELECTED = 0
         const val COMMAND_SWIPE_LEFT = 3
         const val COMMAND_SWIPE_RIGHT = 4
-        // 0 navigation, 1 speed, 2 compass; music (3) needs MediaState.
-        val SUPPORTED_PAGES = listOf(0, 1, 2)
+        const val COMMAND_MUSIC_PREVIOUS = 16
+        const val COMMAND_MUSIC_TOGGLE = 17
+        const val COMMAND_MUSIC_NEXT = 18
+        const val COMMAND_MUSIC_LIKE = 19
+        // 0 navigation, 1 speed, 2 compass, 3 music (remote control only).
+        val SUPPORTED_PAGES = listOf(0, 1, 2, 3)
     }
 }

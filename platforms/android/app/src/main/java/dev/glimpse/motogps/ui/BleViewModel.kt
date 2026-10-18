@@ -25,5 +25,7 @@ class BleViewModel(application: Application) : AndroidViewModel(application) {
     fun connect(address: String) = central.connect(address)
     fun disconnect() = central.disconnect()
 
+    fun openMediaAccessSettings() = nav.openMediaAccessSettings()
+
     fun frameSizeFor(mtu: Int): Int = BleProtocol.mtuToFrameSize(mtu)
 }

@@ -179,6 +179,36 @@ class Esp32BleCentral(
     }
 
     /**
+     * Sends MediaState (metadata only; the display has no audio). Requires the
+     * negotiated capability bit; returns false when the device did not offer it.
+     */
+    fun sendMediaState(
+        flags: Int,
+        trackToken: Long,
+        positionS: Int,
+        durationS: Int,
+        sourceName: String,
+        trackTitle: String,
+        artistName: String,
+    ): Boolean {
+        val connected = _state.value as? State.Connected ?: return false
+        if (connected.capabilities and BleProtocol.Capability.MEDIA_STATE == 0L) return false
+        val payload = runCatching {
+            NativeBridge.encodeMediaState(
+                flags, trackToken, positionS, durationS, sourceName, trackTitle, artistName,
+            )
+        }.getOrElse {
+            logLine("媒体状态编码失败：${it.message}")
+            return false
+        }
+        sendMessage(
+            BleProtocol.MessageType.MEDIA_STATE, payload,
+            withResponse = false, label = "media-state",
+        )
+        return true
+    }
+
+    /**
      * Sends a MapScene and waits for the device ACK (3 s, up to 3 attempts).
      * Only one scene is pending at a time; a newer revision supersedes it.
      */

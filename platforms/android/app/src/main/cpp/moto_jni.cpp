@@ -1091,4 +1091,35 @@ Java_dev_glimpse_motogps_NativeBridge_encodeMapScene(
   return MakeJByteArray(env, result.value);
 }
 
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeMediaState(
+    JNIEnv* env, jclass /*clazz*/, jint flags, jlong track_token,
+    jint position_s, jint duration_s, jstring source_name, jstring track_title,
+    jstring artist_name) {
+  moto::ble::MediaState state;
+  state.flags = static_cast<std::uint8_t>(flags);
+  state.track_token = static_cast<std::uint32_t>(track_token);
+  state.position_s = static_cast<std::uint16_t>(position_s);
+  state.duration_s = static_cast<std::uint16_t>(duration_s);
+  auto read = [env](jstring value) {
+    std::string out;
+    if (value == nullptr) return out;
+    const char* text = env->GetStringUTFChars(value, nullptr);
+    if (text != nullptr) {
+      out = text;
+      env->ReleaseStringUTFChars(value, text);
+    }
+    return out;
+  };
+  state.source_name = read(source_name);
+  state.track_title = read(track_title);
+  state.artist_name = read(artist_name);
+  const BytesResult result = Encode(Message{state});
+  if (!result.ok()) {
+    Throw(env, "encode media state failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
+}
+
 }  // extern "C"

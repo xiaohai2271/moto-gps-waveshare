@@ -166,4 +166,14 @@ object NativeBridge {
         buildingRanges: IntArray,
         buildingPointsLonLat: DoubleArray,
     ): ByteArray
+
+    external fun encodeMediaState(
+        flags: Int,
+        trackToken: Long,
+        positionS: Int,
+        durationS: Int,
+        sourceName: String,
+        trackTitle: String,
+        artistName: String,
+    ): ByteArray
 }

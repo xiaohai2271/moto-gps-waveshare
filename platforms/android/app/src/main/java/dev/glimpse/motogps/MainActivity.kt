@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
                     app.navigationSession.debugRemoteCommand(parts[0], parts.getOrElse(1) { 0 })
                 }
             }
+            intent?.getStringExtra("motoMedia")?.let { app.navigationSession.debugMediaAction(it) }
         }
 
         setContent {
