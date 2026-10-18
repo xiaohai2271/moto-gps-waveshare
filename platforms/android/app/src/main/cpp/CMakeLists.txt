@@ -16,15 +16,19 @@ add_library(moto_core SHARED
         moto_jni.cpp)
 
 target_include_directories(moto_core PRIVATE
+        ${SHARED_DIR}
         ${SHARED_DIR}/ble_protocol/include
         ${SHARED_DIR}/coordinates/include
+        ${SHARED_DIR}/port_api
         ${SHARED_DIR}/nav_core
         ${SHARED_DIR}/nav_app/include
         ${SHARED_DIR}/nav_presenter/include)
 
 target_sources(moto_core PRIVATE
         ${SHARED_DIR}/ble_protocol/src/ble_protocol.cpp
-        ${SHARED_DIR}/coordinates/coordinates.cpp)
+        ${SHARED_DIR}/coordinates/coordinates.cpp
+        ${SHARED_DIR}/nav_core/nav_core.cpp
+        ${SHARED_DIR}/nav_app/nav_app.cpp)
 
-find_library(log-lib log)
-target_link_libraries(moto_core ${log-lib})
+find_package(Threads REQUIRED)
+target_link_libraries(moto_core ${log-lib} Threads::Threads)

@@ -75,4 +75,71 @@ object NativeBridge {
     external fun reassemblerReset(handle: Long)
 
     external fun destroyReassembler(handle: Long)
+
+    // --- Shared navigation core (shared/nav_app) ---
+
+    external fun navCreate(): Long
+    external fun navDestroy(handle: Long)
+    external fun navReset(handle: Long): String
+    external fun navBeginNavigation(handle: Long, lon: Double, lat: Double): String
+    external fun navCancelNavigation(handle: Long): String
+    external fun navSetNetwork(handle: Long, network: Int): String
+    external fun navSelectPage(handle: Long, page: Int): String
+    external fun navPushFix(
+        handle: Long,
+        lon: Double,
+        lat: Double,
+        accuracyM: Double,
+        speedMps: Double,
+        headingDeg: Double,
+        timestampMs: Long,
+    ): String
+    external fun navTick(handle: Long, nowMs: Long): String
+    external fun navSnapshot(handle: Long): String
+
+    external fun navAcceptRoute(
+        handle: Long,
+        requestId: Int,
+        routeId: String,
+        totalDistanceM: Double,
+        totalDurationS: Double,
+        speedLimitKph: Int,
+        generatedAtMs: Long,
+        receivedAtMs: Long,
+        polylineLonLat: DoubleArray,
+        maneuverNumeric: IntArray,
+        maneuverRoads: Array<String>,
+        maneuverInstructions: Array<String>,
+        traffic: DoubleArray,
+    ): String
+
+    external fun navRejectRoute(
+        handle: Long,
+        requestId: Int,
+        retryable: Boolean,
+        receivedAtMs: Long,
+    ): String
+
+    // --- BLE display encoders ---
+
+    external fun bleRouteToken(routeId: String): Long
+
+    /**
+     * numeric[20] = state, network, displayPage, maneuver, traffic, flags,
+     * routeToken, generation, maneuverId, distanceToManeuverM,
+     * remainingDistanceM, remainingDurationS, routeProgressM, totalDistanceM,
+     * speedDeciKph, speedLimitKph, headingCdeg, accuracyDm, crossTrackDm,
+     * roundaboutExit
+     */
+    external fun encodeNavigationSnapshot(
+        numeric: LongArray,
+        roadName: String,
+        instruction: String,
+    ): ByteArray
+
+    /**
+     * meta[9] = coordinateSystem, routeToken, generation, chunkIndex,
+     * chunkCount, firstPointIndex, totalPointCount, originLatE6, originLonE6
+     */
+    external fun encodeRouteGeometry(meta: LongArray, pointsLonLat: DoubleArray): ByteArray
 }

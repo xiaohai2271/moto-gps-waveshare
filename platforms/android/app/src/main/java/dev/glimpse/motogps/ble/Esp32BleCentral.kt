@@ -7,6 +7,7 @@ import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import dev.glimpse.motogps.NativeBridge
 import java.util.UUID
 import kotlin.random.Random
 
@@ -121,6 +122,45 @@ class Esp32BleCentral(
         disconnect()
         transport.close()
         codec.close()
+    }
+
+    /**
+     * Sends one NavigationSnapshot. Returns false when the session is not Ready,
+     * so the caller never treats a queued frame as an acknowledged one.
+     */
+    fun sendNavigationSnapshot(
+        numeric: LongArray,
+        roadName: String,
+        instruction: String,
+    ): Boolean {
+        if (_state.value !is State.Connected) return false
+        val payload = runCatching {
+            NativeBridge.encodeNavigationSnapshot(numeric, roadName, instruction)
+        }.getOrElse {
+            logLine("导航快照编码失败：${it.message}")
+            return false
+        }
+        sendMessage(
+            BleProtocol.MessageType.NAVIGATION_SNAPSHOT, payload,
+            withResponse = false, label = "nav-snapshot",
+        )
+        return true
+    }
+
+    /** Sends one route-geometry chunk (already sliced by the caller). */
+    fun sendRouteGeometry(meta: LongArray, pointsLonLat: DoubleArray): Boolean {
+        if (_state.value !is State.Connected) return false
+        val payload = runCatching {
+            NativeBridge.encodeRouteGeometry(meta, pointsLonLat)
+        }.getOrElse {
+            logLine("路线几何编码失败：${it.message}")
+            return false
+        }
+        sendMessage(
+            BleProtocol.MessageType.ROUTE_GEOMETRY, payload,
+            withResponse = false, label = "route-geometry",
+        )
+        return true
     }
 
     // --- BleTransport.Listener -------------------------------------------

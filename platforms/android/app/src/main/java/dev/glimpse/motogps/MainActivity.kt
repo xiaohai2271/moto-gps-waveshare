@@ -16,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import dev.glimpse.motogps.ui.BleScreen
+import dev.glimpse.motogps.ui.NavScreen
 import dev.glimpse.motogps.ui.SelfCheckScreen
 
 class MainActivity : ComponentActivity() {
@@ -38,7 +39,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppScaffold(fixture: Map<String, String>) {
     var tab by remember { mutableIntStateOf(0) }
-    val titles = listOf("圆屏连接", "协议自检")
+    val titles = listOf("导航", "圆屏连接", "协议自检")
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -46,7 +47,7 @@ private fun AppScaffold(fixture: Map<String, String>) {
                     NavigationBarItem(
                         selected = tab == index,
                         onClick = { tab = index },
-                        icon = { Text(if (index == 0) "◎" else "✓") },
+                        icon = { Text(listOf("➤", "◎", "✓")[index]) },
                         label = { Text(title) },
                     )
                 }
@@ -54,7 +55,8 @@ private fun AppScaffold(fixture: Map<String, String>) {
         },
     ) { padding ->
         when (tab) {
-            0 -> BleScreen(Modifier.padding(padding))
+            0 -> NavScreen(Modifier.padding(padding))
+            1 -> BleScreen(Modifier.padding(padding))
             else -> SelfCheckScreen(fixture, Modifier.padding(padding))
         }
     }

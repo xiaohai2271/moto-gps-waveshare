@@ -7,6 +7,7 @@
 // bytes with shared/protocol/fixtures/ble-navigation-v1.golden.txt.
 #include <jni.h>
 
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -15,6 +16,7 @@
 
 #include "moto/ble_protocol/ble_protocol.hpp"
 #include "moto_coordinates.hpp"
+#include "nav_app/nav_app.hpp"
 
 namespace {
 
@@ -508,6 +510,462 @@ Java_dev_glimpse_motogps_NativeBridge_destroyReassembler(JNIEnv* /*env*/,
                                                          jlong handle) {
   std::lock_guard<std::mutex> lock(g_handle_mutex);
   g_reassemblers.erase(handle);
+}
+
+// ---------------------------------------------------------------------------
+// Shared navigation core (nav_app) bridge. The core stays authoritative; JNI
+// only serialises its commands and snapshot as JSON for Kotlin.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using moto::nav::NavApp;
+using moto::nav::NavCommand;
+using moto::nav::NavCommands;
+using moto::nav::NavEvent;
+using moto::nav::NavSnapshot;
+
+std::mutex g_nav_mutex;
+std::unordered_map<jlong, std::unique_ptr<NavApp>> g_nav_apps;
+jlong g_next_nav_handle = 1;
+
+std::string JsonEscape(const std::string& text) {
+  std::string out;
+  out.reserve(text.size() + 8);
+  for (char c : text) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default: out.push_back(c); break;
+    }
+  }
+  return out;
+}
+
+std::string SnapshotJson(const NavSnapshot& s) {
+  std::string out = "{";
+  out += "\"state\":" + std::to_string(static_cast<int>(s.state));
+  out += ",\"network\":" + std::to_string(static_cast<int>(s.network));
+  out += ",\"displayPage\":" + std::to_string(static_cast<int>(s.display_page));
+  out += ",\"hasDestination\":";
+  out += s.has_destination ? "true" : "false";
+  out += ",\"hasUsableFix\":";
+  out += s.has_usable_fix ? "true" : "false";
+  out += ",\"gnssStale\":";
+  out += s.gnss_stale ? "true" : "false";
+  out += ",\"offRoute\":";
+  out += s.off_route ? "true" : "false";
+  out += ",\"routeRequestInFlight\":";
+  out += s.route_request_in_flight ? "true" : "false";
+  out += ",\"trafficRequestInFlight\":";
+  out += s.traffic_request_in_flight ? "true" : "false";
+  out += ",\"positionLon\":" + std::to_string(s.position.longitude_deg);
+  out += ",\"positionLat\":" + std::to_string(s.position.latitude_deg);
+  out += ",\"destinationLon\":" + std::to_string(s.destination.longitude_deg);
+  out += ",\"destinationLat\":" + std::to_string(s.destination.latitude_deg);
+  out += ",\"speedMps\":" + std::to_string(s.speed_mps);
+  out += ",\"headingDeg\":" + std::to_string(s.heading_deg);
+  out += ",\"accuracyM\":" + std::to_string(s.horizontal_accuracy_m);
+  out += ",\"crossTrackM\":" + std::to_string(s.cross_track_distance_m);
+  out += ",\"speedLimitKph\":" + std::to_string(s.speed_limit_kph);
+  out += ",\"hasRouteView\":";
+  out += s.has_route_view ? "true" : "false";
+  out += ",\"routeViewOriginLon\":" +
+         std::to_string(s.route_view_origin.longitude_deg);
+  out += ",\"routeViewOriginLat\":" +
+         std::to_string(s.route_view_origin.latitude_deg);
+  out += ",\"routeViewPoints\":[";
+  for (std::uint8_t i = 0; i < s.route_view_point_count; ++i) {
+    if (i) out += ",";
+    out += "[" + std::to_string(s.route_view_points[i].longitude_deg) + "," +
+           std::to_string(s.route_view_points[i].latitude_deg) + "]";
+  }
+  out += "]";
+  out += ",\"routeId\":\"" + JsonEscape(s.route_id) + "\"";
+  out += ",\"routeProgressM\":" + std::to_string(s.route_progress_m);
+  out += ",\"totalDistanceM\":" + std::to_string(s.total_distance_m);
+  out += ",\"remainingDistanceM\":" + std::to_string(s.remaining_distance_m);
+  out += ",\"remainingDurationS\":" + std::to_string(s.remaining_duration_s);
+  out += ",\"hasNextManeuver\":";
+  out += s.has_next_maneuver ? "true" : "false";
+  out += ",\"maneuverType\":" +
+         std::to_string(static_cast<int>(s.next_maneuver.type));
+  out += ",\"maneuverId\":" + std::to_string(s.next_maneuver.id);
+  out += ",\"distanceToManeuverM\":" +
+         std::to_string(s.distance_to_next_maneuver_m);
+  out += ",\"roadName\":\"" + JsonEscape(s.next_maneuver.road_name) + "\"";
+  out += ",\"instruction\":\"" + JsonEscape(s.next_maneuver.instruction) + "\"";
+  out += ",\"roundaboutExit\":" +
+         std::to_string(static_cast<int>(s.next_maneuver.roundabout_exit));
+  out += ",\"trafficAhead\":" + std::to_string(static_cast<int>(s.traffic_ahead));
+  out += ",\"nowMs\":" + std::to_string(s.now_ms);
+  out += ",\"routeGeneration\":" + std::to_string(s.route_generation);
+  out += ",\"mapSceneRevision\":" + std::to_string(s.map_scene_revision);
+  out += "}";
+  return out;
+}
+
+std::string CommandsJson(const NavCommands& commands) {
+  std::string out = "[";
+  for (std::size_t i = 0; i < commands.size(); ++i) {
+    if (i) out += ",";
+    const NavCommand& command = commands[i];
+    out += "{";
+    out += "\"type\":" + std::to_string(static_cast<int>(command.type));
+    out += ",\"requestId\":" + std::to_string(command.request_id);
+    out += ",\"originLon\":" + std::to_string(command.route.origin.longitude_deg);
+    out += ",\"originLat\":" + std::to_string(command.route.origin.latitude_deg);
+    out += ",\"destinationLon\":" +
+           std::to_string(command.route.destination.longitude_deg);
+    out += ",\"destinationLat\":" +
+           std::to_string(command.route.destination.latitude_deg);
+    out += ",\"reroute\":";
+    out += command.route.is_reroute ? "true" : "false";
+    out += ",\"routeId\":\"" + JsonEscape(command.route_id) + "\"";
+    out += "}";
+  }
+  out += "]";
+  return out;
+}
+
+std::string HandleResult(NavApp* app, NavCommands commands) {
+  std::string out = "{\"commands\":";
+  out += CommandsJson(commands);
+  out += ",\"snapshot\":";
+  out += SnapshotJson(app->snapshot());
+  out += "}";
+  return out;
+}
+
+NavApp* LookupApp(jlong handle) {
+  const auto it = g_nav_apps.find(handle);
+  return it == g_nav_apps.end() ? nullptr : it->second.get();
+}
+
+jstring ResultToJString(JNIEnv* env, NavApp* app, NavCommands commands) {
+  const std::string out = HandleResult(app, std::move(commands));
+  return env->NewStringUTF(out.c_str());
+}
+
+NavCommands HandleNav(JNIEnv* /*env*/, jlong handle, NavEvent event, bool* ok) {
+  std::lock_guard<std::mutex> lock(g_nav_mutex);
+  NavApp* app = LookupApp(handle);
+  if (app == nullptr) {
+    *ok = false;
+    return {};
+  }
+  *ok = true;
+  return app->handle(std::move(event));
+}
+
+jstring NavEventResult(JNIEnv* env, jlong handle, NavEvent event) {
+  std::lock_guard<std::mutex> lock(g_nav_mutex);
+  NavApp* app = LookupApp(handle);
+  if (app == nullptr) {
+    Throw(env, "unknown nav handle", moto::ble::Error::InvalidArgument);
+    return nullptr;
+  }
+  return ResultToJString(env, app, app->handle(std::move(event)));
+}
+
+}  // namespace
+
+JNIEXPORT jlong JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navCreate(JNIEnv* /*env*/,
+                                                jclass /*clazz*/) {
+  std::lock_guard<std::mutex> lock(g_nav_mutex);
+  const jlong handle = g_next_nav_handle++;
+  g_nav_apps.emplace(handle, std::make_unique<NavApp>(moto::nav::NavCoreConfig{}));
+  return handle;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navDestroy(JNIEnv* /*env*/,
+                                                 jclass /*clazz*/,
+                                                 jlong handle) {
+  std::lock_guard<std::mutex> lock(g_nav_mutex);
+  g_nav_apps.erase(handle);
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navReset(JNIEnv* env, jclass /*clazz*/,
+                                               jlong handle) {
+  return NavEventResult(env, handle, moto::nav::Reset{});
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navBeginNavigation(JNIEnv* env,
+                                                         jclass /*clazz*/,
+                                                         jlong handle,
+                                                         jdouble lon,
+                                                         jdouble lat) {
+  moto::nav::BeginNavigation event;
+  event.destination = {lat, lon};
+  return NavEventResult(env, handle, NavEvent{event});
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navCancelNavigation(JNIEnv* env,
+                                                          jclass /*clazz*/,
+                                                          jlong handle) {
+  return NavEventResult(env, handle, NavEvent{moto::nav::CancelNavigation{}});
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navSetNetwork(JNIEnv* env,
+                                                    jclass /*clazz*/,
+                                                    jlong handle,
+                                                    jint network) {
+  moto::nav::NetworkChanged event;
+  event.state = static_cast<moto::nav::NetworkState>(network);
+  return NavEventResult(env, handle, NavEvent{event});
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navSelectPage(JNIEnv* env,
+                                                    jclass /*clazz*/,
+                                                    jlong handle,
+                                                    jint page) {
+  moto::nav::DisplayPageSelected event;
+  event.page = static_cast<moto::nav::DisplayPage>(page);
+  return NavEventResult(env, handle, NavEvent{event});
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navPushFix(JNIEnv* env, jclass /*clazz*/,
+                                                 jlong handle, jdouble lon,
+                                                 jdouble lat, jdouble accuracy_m,
+                                                 jdouble speed_mps,
+                                                 jdouble heading_deg,
+                                                 jlong timestamp_ms) {
+  moto::nav::GnssFixReceived event;
+  event.fix.position = {lat, lon};
+  event.fix.accuracy_m = static_cast<float>(accuracy_m);
+  event.fix.speed_mps = static_cast<float>(speed_mps);
+  event.fix.heading_deg = static_cast<float>(heading_deg);
+  event.fix.timestamp_ms = static_cast<std::uint64_t>(timestamp_ms);
+  return NavEventResult(env, handle, NavEvent{event});
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navTick(JNIEnv* env, jclass /*clazz*/,
+                                              jlong handle, jlong now_ms) {
+  moto::nav::Tick event;
+  event.timestamp_ms = static_cast<std::uint64_t>(now_ms);
+  return NavEventResult(env, handle, NavEvent{event});
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navAcceptRoute(
+    JNIEnv* env, jclass /*clazz*/, jlong handle, jint request_id,
+    jstring route_id, jdouble total_distance_m, jdouble total_duration_s,
+    jint speed_limit_kph, jlong generated_at_ms, jlong received_at_ms,
+    jdoubleArray polyline_lon_lat, jintArray maneuver_numeric,
+    jobjectArray maneuver_roads, jobjectArray maneuver_instructions,
+    jdoubleArray traffic) {
+  moto::nav::RouteBundle route;
+  if (route_id != nullptr) {
+    const char* text = env->GetStringUTFChars(route_id, nullptr);
+    route.route_id = text != nullptr ? text : "";
+    if (text != nullptr) env->ReleaseStringUTFChars(route_id, text);
+  }
+  route.total_distance_m = total_distance_m;
+  route.total_duration_s = total_duration_s;
+  route.speed_limit_kph = static_cast<std::uint16_t>(speed_limit_kph);
+  route.generated_at_ms = static_cast<std::uint64_t>(generated_at_ms);
+
+  if (polyline_lon_lat != nullptr) {
+    const jsize count = env->GetArrayLength(polyline_lon_lat);
+    std::vector<double> values(static_cast<std::size_t>(count));
+    env->GetDoubleArrayRegion(polyline_lon_lat, 0, count, values.data());
+    for (jsize i = 0; i + 1 < count; i += 2) {
+      route.polyline.push_back({values[i + 1], values[i]});
+    }
+  }
+  if (maneuver_numeric != nullptr && maneuver_roads != nullptr &&
+      maneuver_instructions != nullptr) {
+    const jsize count = env->GetArrayLength(maneuver_numeric);
+    std::vector<int> values(static_cast<std::size_t>(count));
+    env->GetIntArrayRegion(maneuver_numeric, 0, count, values.data());
+    const jsize maneuvers = env->GetArrayLength(maneuver_roads);
+    for (jsize i = 0; i + 4 < count && i / 5 < maneuvers; i += 5) {
+      moto::nav::Maneuver maneuver;
+      maneuver.id = static_cast<std::uint32_t>(values[i]);
+      maneuver.type = static_cast<moto::nav::ManeuverType>(values[i + 1]);
+      maneuver.route_offset_m = static_cast<double>(values[i + 2]);
+      maneuver.roundabout_exit = static_cast<std::uint8_t>(values[i + 3]);
+      auto read_string = [env](jobjectArray array, jsize index) {
+        std::string value;
+        auto item = static_cast<jstring>(env->GetObjectArrayElement(array, index));
+        if (item != nullptr) {
+          const char* text = env->GetStringUTFChars(item, nullptr);
+          if (text != nullptr) {
+            value = text;
+            env->ReleaseStringUTFChars(item, text);
+          }
+          env->DeleteLocalRef(item);
+        }
+        return value;
+      };
+      maneuver.road_name = read_string(maneuver_roads, i / 5);
+      maneuver.instruction = read_string(maneuver_instructions, i / 5);
+      route.maneuvers.push_back(std::move(maneuver));
+    }
+  }
+  if (traffic != nullptr) {
+    const jsize count = env->GetArrayLength(traffic);
+    std::vector<double> values(static_cast<std::size_t>(count));
+    env->GetDoubleArrayRegion(traffic, 0, count, values.data());
+    for (jsize i = 0; i + 2 < count; i += 3) {
+      route.traffic.push_back(
+          {values[i],
+           values[i + 1],
+           static_cast<moto::nav::TrafficLevel>(static_cast<int>(values[i + 2]))});
+    }
+  }
+  moto::nav::RouteReady event;
+  event.request_id = static_cast<std::uint32_t>(request_id);
+  event.route = std::move(route);
+  event.received_at_ms = static_cast<std::uint64_t>(received_at_ms);
+  return NavEventResult(env, handle, NavEvent{std::move(event)});
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navRejectRoute(JNIEnv* env,
+                                                     jclass /*clazz*/,
+                                                     jlong handle,
+                                                     jint request_id,
+                                                     jboolean retryable,
+                                                     jlong received_at_ms) {
+  moto::nav::RouteFailed event;
+  event.request_id = static_cast<std::uint32_t>(request_id);
+  event.retryable = retryable == JNI_TRUE;
+  event.received_at_ms = static_cast<std::uint64_t>(received_at_ms);
+  return NavEventResult(env, handle, NavEvent{event});
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_navSnapshot(JNIEnv* env,
+                                                  jclass /*clazz*/,
+                                                  jlong handle) {
+  std::lock_guard<std::mutex> lock(g_nav_mutex);
+  NavApp* app = LookupApp(handle);
+  if (app == nullptr) {
+    Throw(env, "unknown nav handle", moto::ble::Error::InvalidArgument);
+    return nullptr;
+  }
+  const std::string out = SnapshotJson(app->snapshot());
+  return env->NewStringUTF(out.c_str());
+}
+
+// --- BLE display encoders ---------------------------------------------------
+
+JNIEXPORT jlong JNICALL
+Java_dev_glimpse_motogps_NativeBridge_bleRouteToken(JNIEnv* env,
+                                                    jclass /*clazz*/,
+                                                    jstring route_id) {
+  if (route_id == nullptr) return 0;
+  const char* text = env->GetStringUTFChars(route_id, nullptr);
+  if (text == nullptr) return 0;
+  const std::uint32_t token = moto::ble::route_token(text);
+  env->ReleaseStringUTFChars(route_id, text);
+  return static_cast<jlong>(token);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeNavigationSnapshot(
+    JNIEnv* env, jclass /*clazz*/, jlongArray numeric, jstring road_name,
+    jstring instruction) {
+  const jsize count = numeric == nullptr ? 0 : env->GetArrayLength(numeric);
+  if (count < 20) {
+    Throw(env, "navigation snapshot needs 20 numeric fields",
+          moto::ble::Error::InvalidArgument);
+    return nullptr;
+  }
+  std::vector<jlong> v(static_cast<std::size_t>(count));
+  env->GetLongArrayRegion(numeric, 0, count, v.data());
+
+  NavigationSnapshot snapshot;
+  snapshot.state = static_cast<NavigationState>(v[0]);
+  snapshot.network = static_cast<NetworkState>(v[1]);
+  snapshot.display_page = static_cast<DisplayPage>(v[2]);
+  snapshot.maneuver = static_cast<Maneuver>(v[3]);
+  snapshot.traffic = static_cast<TrafficLevel>(v[4]);
+  snapshot.flags = static_cast<std::uint16_t>(v[5]);
+  snapshot.route_token = static_cast<std::uint32_t>(v[6]);
+  snapshot.route_generation = static_cast<std::uint32_t>(v[7]);
+  snapshot.maneuver_id = static_cast<std::uint32_t>(v[8]);
+  snapshot.distance_to_maneuver_m = static_cast<std::uint32_t>(v[9]);
+  snapshot.remaining_distance_m = static_cast<std::uint32_t>(v[10]);
+  snapshot.remaining_duration_s = static_cast<std::uint32_t>(v[11]);
+  snapshot.route_progress_m = static_cast<std::uint32_t>(v[12]);
+  snapshot.total_distance_m = static_cast<std::uint32_t>(v[13]);
+  snapshot.speed_deci_kph = static_cast<std::uint16_t>(v[14]);
+  snapshot.speed_limit_kph = static_cast<std::uint16_t>(v[15]);
+  snapshot.heading_cdeg = static_cast<std::uint16_t>(v[16]);
+  snapshot.accuracy_dm = static_cast<std::uint16_t>(v[17]);
+  snapshot.cross_track_dm = static_cast<std::uint16_t>(v[18]);
+  snapshot.roundabout_exit = static_cast<std::uint8_t>(v[19]);
+  auto read = [env](jstring value) {
+    std::string out;
+    if (value == nullptr) return out;
+    const char* text = env->GetStringUTFChars(value, nullptr);
+    if (text != nullptr) {
+      out = text;
+      env->ReleaseStringUTFChars(value, text);
+    }
+    return out;
+  };
+  snapshot.road_name = read(road_name);
+  snapshot.instruction = read(instruction);
+
+  const BytesResult result = Encode(Message{snapshot});
+  if (!result.ok()) {
+    Throw(env, "encode navigation snapshot failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeRouteGeometry(
+    JNIEnv* env, jclass /*clazz*/, jlongArray meta, jdoubleArray points_lon_lat) {
+  if (meta == nullptr || env->GetArrayLength(meta) < 9 || points_lon_lat == nullptr) {
+    Throw(env, "route geometry arguments missing",
+          moto::ble::Error::InvalidArgument);
+    return nullptr;
+  }
+  jlong m[9];
+  env->GetLongArrayRegion(meta, 0, 9, m);
+  RouteGeometry geometry;
+  geometry.coordinate_system = static_cast<moto::ble::CoordinateSystem>(m[0]);
+  geometry.route_token = static_cast<std::uint32_t>(m[1]);
+  geometry.route_generation = static_cast<std::uint32_t>(m[2]);
+  geometry.chunk_index = static_cast<std::uint16_t>(m[3]);
+  geometry.chunk_count = static_cast<std::uint16_t>(m[4]);
+  geometry.first_point_index = static_cast<std::uint16_t>(m[5]);
+  geometry.total_point_count = static_cast<std::uint16_t>(m[6]);
+  geometry.view_origin = {static_cast<std::int32_t>(m[7]),
+                          static_cast<std::int32_t>(m[8])};
+
+  const jsize count = env->GetArrayLength(points_lon_lat);
+  std::vector<double> values(static_cast<std::size_t>(count));
+  env->GetDoubleArrayRegion(points_lon_lat, 0, count, values.data());
+  for (jsize i = 0; i + 1 < count; i += 2) {
+    geometry.points.push_back(
+        {static_cast<std::int32_t>(std::llround(values[i + 1] * 1e6)),
+         static_cast<std::int32_t>(std::llround(values[i] * 1e6))});
+  }
+
+  const BytesResult result = Encode(Message{geometry});
+  if (!result.ok()) {
+    Throw(env, "encode route geometry failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
 }
 
 }  // extern "C"
