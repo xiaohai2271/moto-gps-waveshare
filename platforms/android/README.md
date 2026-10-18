@@ -89,6 +89,20 @@ cd platforms/android
 - 阶段四：前台服务 + 锁屏导航、地图下载与缓存预算。
 - 阶段五：预发布 APK、签名、SHA-256、GitHub Release。
 
+## 网关地址（与 iOS 同步）
+
+内置默认地址定义在 `GatewayConfig.DEFAULT_BASE_URL`，必须与
+`platforms/ios/project.yml` 的 `MOTOGPSGatewayBaseURL` 保持一致：
+
+```text
+https://nav.example.com/moto-gps/api/
+```
+
+- `nav.example.com` 是**占位域名**，真实部署需在 App 设置中改成自己的 HTTPS 网关。
+- 只允许 `https`，或回环地址 `127.0.0.1` / `localhost` 上的 `http`（与 iOS 校验一致）。
+- 末端路径自动补一个 `/`，调用 `v1/routes` 等接口时不会出现双斜杠。
+- 高德 Web 服务 Key 只在网关后端，不进 APK。
+
 ## 权限说明
 
 阶段一仅使用 `INTERNET`（后续阶段按需启用，已在 Manifest 声明但未在阶段一请求）：

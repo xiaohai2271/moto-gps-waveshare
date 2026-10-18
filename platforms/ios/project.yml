@@ -58,7 +58,7 @@ targets:
         UIBackgroundModes:
           - location
           - bluetooth-central
-        MOTOGPSGatewayBaseURL: https://example.invalid/moto-gps/api/
+        MOTOGPSGatewayBaseURL: https://nav.example.com/moto-gps/api/
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIApplicationSceneManifest:
