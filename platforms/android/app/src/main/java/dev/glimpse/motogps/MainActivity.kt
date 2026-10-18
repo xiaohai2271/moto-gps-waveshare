@@ -41,6 +41,12 @@ class MainActivity : ComponentActivity() {
                 if (parts.size == 2) app.navigationSession.debugSimulatedFix(parts[0], parts[1])
             }
             intent?.getStringExtra("motoSearch")?.let { app.navigationSession.debugSearchAndStart(it) }
+            intent?.getStringExtra("motoCommand")?.let { value ->
+                val parts = value.split(",").mapNotNull { it.trim().toIntOrNull() }
+                if (parts.isNotEmpty()) {
+                    app.navigationSession.debugRemoteCommand(parts[0], parts.getOrElse(1) { 0 })
+                }
+            }
         }
 
         setContent {

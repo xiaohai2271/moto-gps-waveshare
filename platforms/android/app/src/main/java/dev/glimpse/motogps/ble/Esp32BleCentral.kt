@@ -62,6 +62,9 @@ class Esp32BleCentral(
     private val _log = MutableStateFlow<List<String>>(emptyList())
     val log: StateFlow<List<String>> = _log.asStateFlow()
 
+    /** Receives decoded device gestures (page select, swipe, music keys). */
+    var commandListener: ((RemoteCommand) -> Unit)? = null
+
     private var targetAddress: String? = null
     private var userInitiatedDisconnect = false
     private var txSequence = 0
@@ -354,10 +357,11 @@ class Esp32BleCentral(
             BleProtocol.MessageType.DEVICE_COMMAND -> {
                 val command = runCatching { codec.decodeDeviceCommand(message.payload) }
                     .getOrNull() ?: return
-                logLine("设备命令 kind=${command.kind} id=${command.commandId}")
+                logLine("设备命令 kind=${command.kind} id=${command.commandId} page=${command.page}")
                 if (message.flags and BleProtocol.Flags.ACK_REQUESTED != 0) {
                     sendAck(message.sequence, STATUS_OK, command.commandId)
                 }
+                commandListener?.invoke(command)
             }
 
             else -> logLine("收到 type=${message.type} len=${message.payload.size}")

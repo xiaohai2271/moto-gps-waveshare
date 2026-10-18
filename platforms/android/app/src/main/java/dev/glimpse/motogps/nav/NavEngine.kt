@@ -83,6 +83,8 @@ class NavEngine : AutoCloseable {
 
     fun setNetwork(network: Int): EngineResult = parse(NativeBridge.navSetNetwork(handle, network))
 
+    fun selectPage(page: Int): EngineResult = parse(NativeBridge.navSelectPage(handle, page))
+
     fun pushFix(
         lon: Double,
         lat: Double,

@@ -82,6 +82,7 @@ class NavigationSession(
     private var lastSnapshotDiagAt = 0L
 
     init {
+        central.commandListener = { command -> onDeviceCommand(command) }
         location.start(
             onFix = { fix -> deliverFix(fix) },
             onFailure = { reason -> log("定位不可用：$reason") },
@@ -161,6 +162,41 @@ class NavigationSession(
                 log("调试：预取完成 ${pack.tiles.size} 瓦片")
             }.onFailure { log("调试：预取失败 ${it.message}") }
         }
+    }
+
+    /**
+     * Device gestures are authoritative for page selection: swipe left/right
+     * cycles the pages the phone supports and the next snapshot carries the new
+     * display_page. Music is excluded until MediaState is implemented, so the
+     * device never lands on an empty music page.
+     */
+    private fun onDeviceCommand(command: dev.glimpse.motogps.ble.RemoteCommand) {
+        val pages = SUPPORTED_PAGES
+        val target = when (command.kind) {
+            COMMAND_PAGE_SELECTED -> command.page
+            COMMAND_SWIPE_LEFT -> {
+                val index = pages.indexOf(engine.snapshot().displayPage).let { if (it < 0) 0 else it }
+                pages[(index + 1) % pages.size]
+            }
+            COMMAND_SWIPE_RIGHT -> {
+                val index = pages.indexOf(engine.snapshot().displayPage).let { if (it < 0) 0 else it }
+                pages[(index - 1 + pages.size) % pages.size]
+            }
+            else -> return
+        }
+        if (target !in pages) {
+            log("设备请求的页面 ${target} 暂不支持（音乐需先接入 MediaState）")
+            return
+        }
+        runCatching { feedEngine(engine.selectPage(target)) }
+            .onSuccess { log("切换圆屏页面 → $target") }
+            .onFailure { log("切换页面失败：${it.message}") }
+    }
+
+    /** Debug-only: inject a device gesture (e.g. swipe) for hardware checks. */
+    fun debugRemoteCommand(kind: Int, page: Int = 0) {
+        if (!BuildConfig.DEBUG) return
+        onDeviceCommand(dev.glimpse.motogps.ble.RemoteCommand(kind, 0, page, 0, 0, 0))
     }
 
     fun search(keywords: String) {        scope.launch {
@@ -444,7 +480,7 @@ class NavigationSession(
         } else if (now - lastSnapshotDiagAt > 5_000) {
             lastSnapshotDiagAt = now
             log(
-                "快照诊断 state=${snapshot.state} flags=$flags " +
+                "快照诊断 state=${snapshot.state} page=${snapshot.displayPage} flags=$flags " +
                     "token=${numeric[6]} gen=${numeric[7]} " +
                     "dist=${numeric[9]} remain=${numeric[10]}",
             )
@@ -509,5 +545,10 @@ class NavigationSession(
         const val MAX_POINTS_PER_CHUNK = 24
         const val SCENE_RADIUS_M = 500
         const val SCENE_MIN_MOVE_M = 100.0
+        const val COMMAND_PAGE_SELECTED = 0
+        const val COMMAND_SWIPE_LEFT = 3
+        const val COMMAND_SWIPE_RIGHT = 4
+        // 0 navigation, 1 speed, 2 compass; music (3) needs MediaState.
+        val SUPPORTED_PAGES = listOf(0, 1, 2)
     }
 }
