@@ -17,6 +17,7 @@ class MotoGpsApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLogger.install(this)
         bleCentral = Esp32BleCentral(this)
         navigationSession = NavigationSession(this, bleCentral)
     }

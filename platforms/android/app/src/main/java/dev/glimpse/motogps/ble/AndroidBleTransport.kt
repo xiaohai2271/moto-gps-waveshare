@@ -221,16 +221,21 @@ class AndroidBleTransport(
             listener.onBluetoothUnavailable("no Bluetooth adapter")
             return
         }
+        if (!hasScanPermission()) {
+            listener.onBluetoothUnavailable("扫描权限未授予")
+            return
+        }
         if (!appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
             listener.onBluetoothUnavailable("BLE not supported")
             return
         }
-        if (!adapter.isEnabled) {
+        val enabled = runCatching { adapter.isEnabled }.getOrDefault(false)
+        if (!enabled) {
             listener.onBluetoothUnavailable("Bluetooth is off")
             return
         }
         if (scanning) return
-        val scanner = adapter.bluetoothLeScanner ?: run {
+        val scanner = runCatching { adapter.bluetoothLeScanner }.getOrNull() ?: run {
             listener.onBluetoothUnavailable("BLE scanner unavailable")
             return
         }
@@ -262,7 +267,12 @@ class AndroidBleTransport(
             listener.onBluetoothUnavailable("no Bluetooth adapter")
             return
         }
-        if (!adapter.isEnabled) {
+        if (!hasConnectPermission()) {
+            listener.onBluetoothUnavailable("蓝牙连接权限未授予")
+            return
+        }
+        val enabled = runCatching { adapter.isEnabled }.getOrDefault(false)
+        if (!enabled) {
             listener.onBluetoothUnavailable("Bluetooth is off")
             return
         }
@@ -275,13 +285,26 @@ class AndroidBleTransport(
                 return
             }
         connectedAddress = address
-        gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } else {
-            device.connectGatt(appContext, false, gattCallback)
-        }
-        if (gatt == null) listener.onError("connectGatt returned null")
+        val created = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            } else {
+                device.connectGatt(appContext, false, gattCallback)
+            }
+        }.getOrNull()
+        gatt = created
+        if (created == null) listener.onError("connectGatt failed")
     }
+
+    private fun hasScanPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            appContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasConnectPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            appContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
 
     override fun disconnect() {
         stopScan()

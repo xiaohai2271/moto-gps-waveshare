@@ -16,22 +16,23 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
-import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import kotlin.math.roundToLong
 
 /**
- * Live smoke test that needs real hardware and network. It is skipped unless
- * the runner passes `-e motoMac <display MAC>`.
+ * Live smoke test against the real gateway and, when a MAC is supplied, the
+ * real round display. The route test needs no Android runtime permission.
  *
- * Run:
+ * Route test:
  *   adb shell am instrument -w \
- *     -e motoMac AA:BB:CC:DD:EE:FF \
- *     -e class dev.glimpse.motogps.LiveNavigationSmokeTest \
+ *     -e class dev.glimpse.motogps.LiveNavigationSmokeTest#planRouteThroughLiveGateway \
  *     dev.glimpse.motogps.test/androidx.test.runner.AndroidJUnitRunner
  *
- * The MAC is intentionally not stored in the repository.
+ * BLE test (requires BLUETOOTH_* granted; MAC intentionally not in the repo):
+ *   adb shell am instrument -w -e motoMac AA:BB:CC:DD:EE:FF \
+ *     -e class dev.glimpse.motogps.LiveNavigationSmokeTest#connectRoundDisplayAndSendScene \
+ *     dev.glimpse.motogps.test/androidx.test.runner.AndroidJUnitRunner
  */
 @RunWith(AndroidJUnit4::class)
 class LiveNavigationSmokeTest {
@@ -39,34 +40,11 @@ class LiveNavigationSmokeTest {
     private val instrumentation: Instrumentation =
         InstrumentationRegistry.getInstrumentation()
 
-    @Before
-    fun grantPermissions() {
-        val packageName = instrumentation.targetContext.packageName
-        val automation = instrumentation.uiAutomation
-        val permissions = buildList {
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
-            if (Build.VERSION.SDK_INT >= 31) {
-                add(Manifest.permission.BLUETOOTH_SCAN)
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-        }
-        permissions.forEach { permission ->
-            runCatching { automation.grantRuntimePermission(packageName, permission) }
-        }
-        val context = instrumentation.targetContext
-        permissions.forEach { permission ->
-            assumeTrue(
-                "missing $permission",
-                context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED,
-            )
-        }
-    }
-
     @Test
     fun planRouteThroughLiveGateway() = runBlocking {
         val client = GatewayClient()
         val health = justTry { client.health() }
-        assumeTrue("gateway unreachable", health != null)
+        assumeTrue("gateway unreachable from this network", health != null)
         assertTrue("gateway not ready", health!!.contains("\"ready_for_live_navigation\":true"))
 
         val originLon = 117.0207
@@ -108,6 +86,11 @@ class LiveNavigationSmokeTest {
     fun connectRoundDisplayAndSendScene() = runBlocking {
         val mac = InstrumentationRegistry.getArguments().getString("motoMac")
         assumeTrue("pass -e motoMac <MAC> to run the BLE smoke test", !mac.isNullOrBlank())
+        assumeTrue("BLUETOOTH_CONNECT not granted", hasBluetoothConnect())
+        assumeTrue(
+            "BLUETOOTH_SCAN not granted",
+            Build.VERSION.SDK_INT < 31 || hasPermission(Manifest.permission.BLUETOOTH_SCAN),
+        )
 
         val app = instrumentation.targetContext.applicationContext as MotoGpsApplication
         val central = app.bleCentral
@@ -125,7 +108,6 @@ class LiveNavigationSmokeTest {
         )
         assertTrue("snapshot rejected", central.sendNavigationSnapshot(numeric, "", ""))
 
-        // One geometry chunk around the current position (GCJ-02 input).
         val token = NativeBridge.bleRouteToken("live-test-route")
         val points = doubleArrayOf(
             117.0207, 36.6676, 117.0210, 36.6678, 117.0213, 36.6680,
@@ -138,6 +120,13 @@ class LiveNavigationSmokeTest {
 
         instrumentation.runOnMainSync { central.disconnect() }
     }
+
+    private fun hasPermission(permission: String): Boolean =
+        instrumentation.targetContext.checkSelfPermission(permission) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasBluetoothConnect(): Boolean =
+        Build.VERSION.SDK_INT < 31 || hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
 
     private suspend fun <T> justTry(block: suspend () -> T): T? = try {
         block()

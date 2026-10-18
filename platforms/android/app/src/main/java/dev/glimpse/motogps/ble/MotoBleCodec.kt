@@ -102,7 +102,9 @@ class MotoBleCodec : AutoCloseable {
     }
 
     fun pushFrame(frame: ByteArray, nowMs: Long): Reassembly {
-        val raw = NativeBridge.reassemblerPush(reassembler, frame, nowMs)
+        val raw = runCatching {
+            NativeBridge.reassemblerPush(reassembler, frame, nowMs)
+        }.getOrNull() ?: return Reassembly.Failed(-1)
         val fields = raw.split(',').mapNotNull {
             val i = it.indexOf('=')
             if (i <= 0) null else it.substring(0, i) to it.substring(i + 1)

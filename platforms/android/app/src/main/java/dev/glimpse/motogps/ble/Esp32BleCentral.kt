@@ -110,6 +110,9 @@ class Esp32BleCentral(
         targetAddress = null
         main.removeCallbacksAndMessages(null)
         tickerRunning = false
+        pumpScheduled = false
+        handshakeAttempts = 0
+        lastValidFrameAtMs = 0
         handshake.onTransportLost()
         codec.resetReassembler()
         outbound.clear()

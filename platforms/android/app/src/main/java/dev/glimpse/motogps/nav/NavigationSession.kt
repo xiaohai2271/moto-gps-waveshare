@@ -2,6 +2,7 @@ package dev.glimpse.motogps.nav
 
 import android.content.Context
 import android.os.SystemClock
+import android.util.Log
 import dev.glimpse.motogps.NativeBridge
 import dev.glimpse.motogps.ble.Esp32BleCentral
 import dev.glimpse.motogps.gateway.GatewayClient
@@ -160,12 +161,17 @@ class NavigationSession(
     }
 
     private fun feedEngine(result: EngineResult) {
-        result.commands.forEach { command ->
-            if (command.isRequestRoute) requestRoute(command) else {
-                log("暂不支持的命令 type=${command.type}")
+        try {
+            result.commands.forEach { command ->
+                if (command.isRequestRoute) requestRoute(command) else {
+                    log("暂不支持的命令 type=${command.type}")
+                }
             }
+            publish(result.snapshot)
+        } catch (error: Throwable) {
+            // A protocol/JNI rejection must degrade to a status line, not a crash.
+            log("导航核心处理失败：${error.message}")
         }
-        publish(result.snapshot)
     }
 
     private fun requestRoute(command: EngineCommand) {
@@ -180,21 +186,27 @@ class NavigationSession(
                     command.reroute, previous,
                 )
             }.onSuccess { route ->
-                val accepted = engine.acceptRoute(requestId, route, System.currentTimeMillis())
-                _state.value = _state.value.copy(
-                    route = route,
-                    status = if (command.reroute) "已重新规划" else "导航中",
-                    remainingM = route.totalDistanceM,
-                )
-                log(
-                    "路线已就绪：${(route.totalDistanceM / 1000).roundToInt()} km，" +
-                        "${(route.totalDurationS / 60).roundToInt()} 分钟，${route.polyline.size} 点",
-                )
-                feedEngine(accepted)
-                lastGeometryKey = null
+                runCatching {
+                    val accepted = engine.acceptRoute(requestId, route, System.currentTimeMillis())
+                    _state.value = _state.value.copy(
+                        route = route,
+                        status = if (command.reroute) "已重新规划" else "导航中",
+                        remainingM = route.totalDistanceM,
+                    )
+                    log(
+                        "路线已就绪：${(route.totalDistanceM / 1000).roundToInt()} km，" +
+                            "${(route.totalDurationS / 60).roundToInt()} 分钟，${route.polyline.size} 点",
+                    )
+                    feedEngine(accepted)
+                    lastGeometryKey = null
+                }.onFailure { error ->
+                    log("路线应用失败：${error.message}")
+                }
             }.onFailure { error ->
                 val retryable = (error as? GatewayException)?.error?.retryable ?: true
-                feedEngine(engine.rejectRoute(requestId, retryable, System.currentTimeMillis()))
+                runCatching {
+                    feedEngine(engine.rejectRoute(requestId, retryable, System.currentTimeMillis()))
+                }
                 log("路线请求失败：${error.message}")
             }
         }
@@ -303,11 +315,13 @@ class NavigationSession(
     }
 
     private fun log(line: String) {
+        Log.i(TAG, line)
         val stamped = "${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())}  $line"
         _state.value = _state.value.copy(log = (_state.value.log + stamped).takeLast(60))
     }
 
     private companion object {
+        const val TAG = "MotoGpsNav"
         const val SNAPSHOT_INTERVAL_MS = 200L
         const val MAX_POINTS_PER_CHUNK = 24
     }
