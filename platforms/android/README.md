@@ -44,15 +44,19 @@ cd platforms/android
 .\gradlew.bat connectedDebugAndroidTest   # 需已连接设备/模拟器：JNI 金标端到端
 ```
 
-本机实测结果（2026-10-18，Windows 11 + Android 模拟器 forseti_p0 API 36 x86_64）：
+本机实测结果（2026-10-18）：
 
 | 检查 | 结果 |
 | --- | --- |
-| `assembleDebug` | BUILD SUCCESSFUL，APK 12.9 MB |
+| `assembleDebug` | BUILD SUCCESSFUL |
 | `assembleDebugAndroidTest` | BUILD SUCCESSFUL |
-| `testDebugUnitTest` | 6 个测试通过（包含独立 CRC 校验） |
-| `connectedDebugAndroidTest` | 2 个测试通过：JNI 编码与上游 golden **逐字节一致**；坐标转换 |
-| 模拟器安装 + App 内自检 | PASS，6/6 向量 match（截图 `docs/android-phase1-selfcheck.png`） |
+| `testDebugUnitTest` | **26 个测试通过**（协议常量、golden 结构、CRC、握手、队列、退避） |
+| `connectedDebugAndroidTest`（模拟器 API 36） | 2 个测试通过：JNI 编码与上游 golden **逐字节一致**；坐标转换 |
+| 模拟器安装 + App 内自检 | PASS，6/6 向量 match（`docs/android-phase1-selfcheck.png`） |
+| **真机**：Xiaomi 14（23127PN0CC，Android 16） | 安装成功；扫描到 `MOTO GPS` 圆屏（RSSI -65 dBm，MAC 已省略） |
+| 真机 BLE 握手 | **通过**：MTU 185 → frameSize 182，能力 `0xff`，三步握手完成 |
+| 真机心跳 | **通过**：每秒收到设备 Heartbeat（type=2，11 字节），手机心跳持续发送 |
+| 真机断开/重连 | **通过**：主动断开 → 空闲；重新选择设备 → 再次握手成功 |
 
 ![阶段一自检](../../docs/android-phase1-selfcheck.png)
 
@@ -79,12 +83,26 @@ cd platforms/android
 | 上游 golden 字节端到端一致性 | 模拟器通过 |
 | 协议常量与 fixture 结构 JVM 测试 | 通过 |
 | CI：新增 android job（构建 + 单元测试 + 产物上传） | 已添加，待首次远端运行 |
-| 真机 BLE 连接圆屏 | **尚未验证**（无真机） |
+| 真机 BLE 连接圆屏 | **通过**（Xiaomi 14，2026-10-18） |
+
+### 阶段二（BLE 连接与握手）— 已完成基础链路
+
+| 项目 | 状态 |
+| --- | --- |
+| 按服务 UUID 扫描、显式选择设备 | 已实现，真机通过 |
+| GATT 连接、MTU 协商（不假设 512） | 已实现，真机 MTU=185 → 帧 182 |
+| 订阅 TX Notify、三步握手、能力交集 | 已实现，真机通过 |
+| 心跳（会话内计时）、设备存活超时 | 已实现，真机通过 |
+| 断开清队列、退避重连（1/2/4/8/15/30 s） | 已实现；重连握手真机通过 |
+| JNI：ConnectionStatus/Heartbeat/Ack 编解码、C++ 重组器句柄 | 已实现 |
+| 128 帧队列、整消息原子入队、溢出清队 | 已实现并单测通过 |
+| 15 ms 写泵节流 | 已实现（策略单测通过，真机未测满负载） |
+| 配对/加密失败恢复 | **未验证**（当前设备 Just Works 直接成功） |
+| 应用层 ACK 重试（750 ms ×2） | 尚未实现，仅对设备命令回 ACK |
+| LVGL 显示数据（导航/几何/地图） | 尚未发送 |
 
 ### 后续阶段
 
-- 阶段二：BLE 扫描/连接/加密/订阅、三步握手、写泵（15 ms 单帧）、128 帧队列、
-  心跳、ACK、退避重连；真机联调。
 - 阶段三：网关客户端、定位（区分权限）、NavApp JNI 复用、真实导航与偏航重算。
 - 阶段四：前台服务 + 锁屏导航、地图下载与缓存预算。
 - 阶段五：预发布 APK、签名、SHA-256、GitHub Release。

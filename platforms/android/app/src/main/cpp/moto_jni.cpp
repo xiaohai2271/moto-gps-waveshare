@@ -7,7 +7,10 @@
 // bytes with shared/protocol/fixtures/ble-navigation-v1.golden.txt.
 #include <jni.h>
 
+#include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "moto/ble_protocol/ble_protocol.hpp"
@@ -282,6 +285,229 @@ Java_dev_glimpse_motogps_NativeBridge_wgs84ToGcj02(JNIEnv* env,
                        result.ok() ? 1.0 : 0.0};
   env->SetDoubleArrayRegion(out, 0, 3, values);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Message encoders used by the BLE session (handshake, heartbeat, ACK).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::string HexOf(const Bytes& bytes) { return Hex(bytes); }
+
+}  // namespace
+
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeConnectionStatus(
+    JNIEnv* env, jclass /*clazz*/, jint role, jint state, jint minimum_version,
+    jint maximum_version, jlong capabilities, jlong session_id,
+    jint max_frame_size, jint heartbeat_interval_ms) {
+  ConnectionStatus status;
+  status.role = static_cast<EndpointRole>(role);
+  status.state = static_cast<ConnectionState>(state);
+  status.minimum_version = static_cast<std::uint8_t>(minimum_version);
+  status.maximum_version = static_cast<std::uint8_t>(maximum_version);
+  status.capabilities = static_cast<std::uint32_t>(capabilities);
+  status.session_id = static_cast<std::uint32_t>(session_id);
+  status.max_frame_size = static_cast<std::uint16_t>(max_frame_size);
+  status.heartbeat_interval_ms =
+      static_cast<std::uint16_t>(heartbeat_interval_ms);
+  const BytesResult result = Encode(Message{status});
+  if (!result.ok()) {
+    Throw(env, "encode connection status failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeHeartbeat(
+    JNIEnv* env, jclass /*clazz*/, jlong session_id, jlong monotonic_ms,
+    jint status_flags) {
+  Heartbeat heartbeat;
+  heartbeat.session_id = static_cast<std::uint32_t>(session_id);
+  heartbeat.monotonic_ms = static_cast<std::uint32_t>(monotonic_ms);
+  heartbeat.status_flags = static_cast<std::uint16_t>(status_flags);
+  const BytesResult result = Encode(Message{heartbeat});
+  if (!result.ok()) {
+    Throw(env, "encode heartbeat failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeAck(JNIEnv* env, jclass /*clazz*/,
+                                                jint acknowledged_sequence,
+                                                jint status, jint command_id) {
+  Ack ack;
+  ack.acknowledged_sequence = static_cast<std::uint16_t>(acknowledged_sequence);
+  ack.status = static_cast<AckStatus>(status);
+  ack.command_id = static_cast<std::uint16_t>(command_id);
+  const BytesResult result = Encode(Message{ack});
+  if (!result.ok()) {
+    Throw(env, "encode ack failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_decodeConnectionStatus(
+    JNIEnv* env, jclass /*clazz*/, jbyteArray payload) {
+  Bytes buffer;
+  ReadBytes(env, payload, &buffer);
+  const moto::ble::MessageResult result = moto::ble::decode_message(
+      moto::ble::MessageType::ConnectionStatus,
+      ByteView{buffer.data(), buffer.size()});
+  if (!result.ok()) {
+    Throw(env, "decode connection status failed: ", result.error);
+    return nullptr;
+  }
+  const auto& status = std::get<ConnectionStatus>(result.value);
+  jlong values[9] = {moto::ble::kPayloadRevision,
+                     static_cast<jlong>(status.role),
+                     static_cast<jlong>(status.state),
+                     static_cast<jlong>(status.minimum_version),
+                     static_cast<jlong>(status.maximum_version),
+                     static_cast<jlong>(status.capabilities),
+                     static_cast<jlong>(status.session_id),
+                     static_cast<jlong>(status.max_frame_size),
+                     static_cast<jlong>(status.heartbeat_interval_ms)};
+  jlongArray out = env->NewLongArray(9);
+  env->SetLongArrayRegion(out, 0, 9, values);
+  return out;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_decodeAck(JNIEnv* env, jclass /*clazz*/,
+                                                jbyteArray payload) {
+  Bytes buffer;
+  ReadBytes(env, payload, &buffer);
+  const moto::ble::MessageResult result = moto::ble::decode_message(
+      moto::ble::MessageType::Ack, ByteView{buffer.data(), buffer.size()});
+  if (!result.ok()) {
+    Throw(env, "decode ack failed: ", result.error);
+    return nullptr;
+  }
+  const auto& ack = std::get<Ack>(result.value);
+  jint values[4] = {static_cast<jint>(moto::ble::kPayloadRevision),
+                    static_cast<jint>(ack.acknowledged_sequence),
+                    static_cast<jint>(ack.status),
+                    static_cast<jint>(ack.command_id)};
+  jintArray out = env->NewIntArray(4);
+  env->SetIntArrayRegion(out, 0, 4, values);
+  return out;
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_decodeDeviceCommand(
+    JNIEnv* env, jclass /*clazz*/, jbyteArray payload) {
+  Bytes buffer;
+  ReadBytes(env, payload, &buffer);
+  const moto::ble::MessageResult result = moto::ble::decode_message(
+      moto::ble::MessageType::DeviceCommand,
+      ByteView{buffer.data(), buffer.size()});
+  if (!result.ok()) {
+    Throw(env, "decode device command failed: ", result.error);
+    return nullptr;
+  }
+  const auto& command = std::get<DeviceCommand>(result.value);
+  jlong values[7] = {static_cast<jlong>(moto::ble::kPayloadRevision),
+                     static_cast<jlong>(command.kind),
+                     static_cast<jlong>(command.command_id),
+                     static_cast<jlong>(command.page),
+                     static_cast<jlong>(command.x),
+                     static_cast<jlong>(command.y),
+                     static_cast<jlong>(command.event_time_ms)};
+  jlongArray out = env->NewLongArray(7);
+  env->SetLongArrayRegion(out, 0, 7, values);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Reassembler handles. One handle per inbound direction (phone side).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::mutex g_handle_mutex;
+std::unordered_map<jlong, std::unique_ptr<moto::ble::Reassembler>>
+    g_reassemblers;
+jlong g_next_handle = 1;
+
+}  // namespace
+
+JNIEXPORT jlong JNICALL
+Java_dev_glimpse_motogps_NativeBridge_createReassembler(JNIEnv* /*env*/,
+                                                        jclass /*clazz*/,
+                                                        jlong timeout_ms) {
+  moto::ble::ReassemblerConfig config;
+  if (timeout_ms > 0) {
+    config.fragment_timeout_ms = static_cast<std::uint64_t>(timeout_ms);
+  }
+  std::lock_guard<std::mutex> lock(g_handle_mutex);
+  const jlong handle = g_next_handle++;
+  g_reassemblers.emplace(
+      handle, std::make_unique<moto::ble::Reassembler>(config));
+  return handle;
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_glimpse_motogps_NativeBridge_reassemblerPush(JNIEnv* env,
+                                                      jclass /*clazz*/,
+                                                      jlong handle,
+                                                      jbyteArray frame,
+                                                      jlong now_ms) {
+  Bytes buffer;
+  ReadBytes(env, frame, &buffer);
+  moto::ble::ReassemblyResult result;
+  {
+    std::lock_guard<std::mutex> lock(g_handle_mutex);
+    const auto it = g_reassemblers.find(handle);
+    if (it == g_reassemblers.end()) {
+      Throw(env, "unknown reassembler handle", moto::ble::Error::InvalidArgument);
+      return nullptr;
+    }
+    result = it->second->push(ByteView{buffer.data(), buffer.size()},
+                              static_cast<std::uint64_t>(now_ms));
+  }
+  std::string out = "state=";
+  out += std::to_string(static_cast<int>(result.state));
+  out += ",error=";
+  out += std::to_string(static_cast<int>(result.error));
+  out += ",dropped=";
+  out += result.dropped_incomplete ? "1" : "0";
+  out += ",type=";
+  out += std::to_string(static_cast<int>(result.message.type));
+  out += ",version=";
+  out += std::to_string(static_cast<int>(result.message.version));
+  out += ",flags=";
+  out += std::to_string(static_cast<int>(result.message.flags));
+  out += ",seq=";
+  out += std::to_string(static_cast<int>(result.message.sequence));
+  out += ",payload=";
+  out += HexOf(result.message.payload);
+  return env->NewStringUTF(out.c_str());
+}
+
+JNIEXPORT void JNICALL
+Java_dev_glimpse_motogps_NativeBridge_reassemblerReset(JNIEnv* /*env*/,
+                                                       jclass /*clazz*/,
+                                                       jlong handle) {
+  std::lock_guard<std::mutex> lock(g_handle_mutex);
+  const auto it = g_reassemblers.find(handle);
+  if (it != g_reassemblers.end()) {
+    it->second->reset();
+  }
+}
+
+JNIEXPORT void JNICALL
+Java_dev_glimpse_motogps_NativeBridge_destroyReassembler(JNIEnv* /*env*/,
+                                                         jclass /*clazz*/,
+                                                         jlong handle) {
+  std::lock_guard<std::mutex> lock(g_handle_mutex);
+  g_reassemblers.erase(handle);
 }
 
 }  // extern "C"

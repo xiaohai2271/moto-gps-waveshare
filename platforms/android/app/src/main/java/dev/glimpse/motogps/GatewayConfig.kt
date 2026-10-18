@@ -13,11 +13,10 @@ import java.net.URI
 object GatewayConfig {
     /**
      * Keep this value identical to the iOS Info.plist entry
-     * `MOTOGPSGatewayBaseURL: https://nav.example.com/moto-gps/api/`.
-     * `nav.example.com` is a placeholder: real deployments must set their own
-     * HTTPS gateway in the app settings.
+     * `MOTOGPSGatewayBaseURL: https://moto.menghuan.life/` in
+     * platforms/ios/project.yml.
      */
-    const val DEFAULT_BASE_URL = "https://nav.example.com/moto-gps/api/"
+    const val DEFAULT_BASE_URL = "https://moto.menghuan.life/"
 
     sealed interface Validation {
         data class Ok(val baseUrl: String) : Validation

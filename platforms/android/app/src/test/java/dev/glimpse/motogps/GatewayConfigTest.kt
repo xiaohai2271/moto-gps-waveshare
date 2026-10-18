@@ -8,7 +8,7 @@ class GatewayConfigTest {
     @Test
     fun defaultBaseUrlMatchesIosProjectYml() {
         // Must equal MOTOGPSGatewayBaseURL in platforms/ios/project.yml.
-        assertEquals("https://nav.example.com/moto-gps/api/", GatewayConfig.DEFAULT_BASE_URL)
+        assertEquals("https://moto.menghuan.life/", GatewayConfig.DEFAULT_BASE_URL)
         assertTrue(GatewayConfig.validate(GatewayConfig.DEFAULT_BASE_URL) is GatewayConfig.Validation.Ok)
     }
 
@@ -34,7 +34,8 @@ class GatewayConfigTest {
     @Test
     fun resolvesEndpointsWithoutDoubleSlashes() {
         val base = GatewayConfig.DEFAULT_BASE_URL
-        assertEquals("https://nav.example.com/moto-gps/api/v1/routes", GatewayConfig.resolve(base, "v1/routes"))
-        assertEquals("https://nav.example.com/moto-gps/api/v1/places", GatewayConfig.resolve(base, "/v1/places"))
+        val root = "https://moto.menghuan.life/"
+        assertEquals("${root}v1/routes", GatewayConfig.resolve(base, "v1/routes"))
+        assertEquals("${root}v1/places", GatewayConfig.resolve(base, "/v1/places"))
     }
 }

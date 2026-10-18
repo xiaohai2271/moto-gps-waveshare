@@ -1,0 +1,28 @@
+package dev.glimpse.motogps.ui
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import dev.glimpse.motogps.ble.BleProtocol
+import dev.glimpse.motogps.ble.DiscoveredDevice
+import dev.glimpse.motogps.ble.Esp32BleCentral
+import kotlinx.coroutines.flow.StateFlow
+
+class BleViewModel(application: Application) : AndroidViewModel(application) {
+    private val central = Esp32BleCentral(application)
+
+    val state: StateFlow<Esp32BleCentral.State> = central.state
+    val devices: StateFlow<List<DiscoveredDevice>> = central.devices
+    val log: StateFlow<List<String>> = central.log
+
+    fun scan() = central.startScan()
+    fun stopScan() = central.stopScan()
+    fun connect(address: String) = central.connect(address)
+    fun disconnect() = central.disconnect()
+
+    fun frameSizeFor(mtu: Int): Int = BleProtocol.mtuToFrameSize(mtu)
+
+    override fun onCleared() {
+        central.shutdown()
+        super.onCleared()
+    }
+}
