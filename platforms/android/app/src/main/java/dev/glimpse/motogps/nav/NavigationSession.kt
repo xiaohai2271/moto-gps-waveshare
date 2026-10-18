@@ -346,10 +346,8 @@ class NavigationSession(
                 _state.value = _state.value.copy(places = places)
                 log("搜索到 ${places.size} 个地点")
                 if (autoStartAfterSearch) {
-                    autoStartAfterSearch = false
                     places.firstOrNull { it.isWgs84 }?.let { place ->
                         select(place)
-                        start()
                     }
                 }
             }.onFailure { log("搜索失败：${it.message}") }
@@ -420,6 +418,10 @@ class NavigationSession(
                     chosenOptionIndex = 0,
                 )
                 log("已获取 ${candidates.size} 条候选路线")
+                if (autoStartAfterSearch) {
+                    autoStartAfterSearch = false
+                    start()
+                }
             }.onFailure { error ->
                 _state.value = _state.value.copy(
                     optionsLoading = false,
