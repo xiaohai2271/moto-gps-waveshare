@@ -87,6 +87,7 @@ jobs:
       - name: Build debug APK and unit tests
         working-directory: platforms/android
         run: |
+          chmod +x gradlew
           ./gradlew assembleDebug testDebugUnitTest --no-daemon
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

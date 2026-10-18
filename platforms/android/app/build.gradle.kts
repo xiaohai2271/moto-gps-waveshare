@@ -4,6 +4,21 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+import java.util.Properties
+
+// Release signing material lives outside the repository. Provide
+// platforms/android/signing.properties (gitignored) or these env vars:
+// MOTO_GPS_KEYSTORE, MOTO_GPS_KEYSTORE_PASSWORD, MOTO_GPS_KEY_ALIAS,
+// MOTO_GPS_KEY_PASSWORD.
+val signingPropertiesFile = rootProject.file("signing.properties")
+val signingProperties = Properties().apply {
+    if (signingPropertiesFile.exists()) {
+        signingPropertiesFile.inputStream().use { load(it) }
+    }
+}
+fun signingValue(key: String, env: String): String? =
+    signingProperties.getProperty(key) ?: System.getenv(env)
+
 android {
     namespace = "dev.glimpse.motogps"
     compileSdk = 36
@@ -41,6 +56,15 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            val keystorePath = signingValue("storeFile", "MOTO_GPS_KEYSTORE")
+            if (keystorePath != null) {
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = file(keystorePath)
+                    storePassword = signingValue("storePassword", "MOTO_GPS_KEYSTORE_PASSWORD")
+                    keyAlias = signingValue("keyAlias", "MOTO_GPS_KEY_ALIAS")
+                    keyPassword = signingValue("keyPassword", "MOTO_GPS_KEY_PASSWORD")
+                }
+            }
         }
     }
     compileOptions {
