@@ -2,3 +2,11 @@
 signing.properties
 *.jks
 *.keystore
+
+build-log*.txt
+connected-log*.txt
+install-log*.txt
+wrapper-log*.txt
+cxx-log*.txt
+release-log*.txt
+clean-build*.txt
