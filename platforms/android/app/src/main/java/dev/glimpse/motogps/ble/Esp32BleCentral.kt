@@ -168,7 +168,9 @@ class Esp32BleCentral(
         }
         sendMessage(
             BleProtocol.MessageType.ROUTE_GEOMETRY, payload,
-            withResponse = false, label = "route-geometry",
+            withResponse = false,
+            applicationFlags = BleProtocol.Flags.ACK_REQUESTED,
+            label = "route-geometry",
         )
         return true
     }

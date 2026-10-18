@@ -101,7 +101,7 @@ cd platforms/android
 | 应用层 ACK 重试（750 ms ×2） | 尚未实现，仅对设备命令回 ACK |
 | LVGL 显示数据（导航/几何/地图） | 尚未发送 |
 
-### 阶段三（真实导航）— 管线已通，硬件显示待确认
+### 阶段三（真实导航）— 真机全链路已通过
 
 | 项目 | 状态 |
 | --- | --- |
@@ -109,10 +109,10 @@ cd platforms/android
 | WGS84 请求 / GCJ-02 几何边界，request_id 回显校验 | 已实现并单测通过 |
 | 定位：平台 LocationManager，GPS + 网络双源，拒绝陈旧/低精度 | 已实现；室内网络定位可用 |
 | NavApp JNI：begin/fix/tick/accept/reject/snapshot | 已实现；Mi 10 仪器测试 **通过** |
-| NavigationSnapshot（20 字段）与 RouteGeometry 分块编码 | 已实现；真机 BLE 发送 **通过** |
-| 前台服务（location + connectedDevice）与结束通知 | 已实现，**未做锁屏时长实测** |
-| 圆屏实际渲染导航画面 | **待在圆屏上目视确认**（数据已发送） |
-| 偏航重算、路况刷新 | 未实现（命令仅记录） |
+| NavigationSnapshot 5 Hz、RouteGeometry 分块（带 ACK） | 真机 **通过**，几何 ACK=Ok |
+| 圆屏实际渲染导航画面 | **真机通过**：圆屏由 READY 进入导航（2026-10-18 23:24） |
+| 前台服务（location + connectedDevice）与结束通知 | 已实现，**锁屏时长未实测** |
+| 偏航重算、路况刷新 | 已实现（路况复用 /v1/routes 并回灌 NavCore），**未实车验证** |
 
 ### 阶段四（离线地图）— 已实现并测试
 

@@ -79,6 +79,7 @@ class NavigationSession(
     private var lastSceneAtMs = 0L
     private var lastSceneLon = 0.0
     private var lastSceneLat = 0.0
+    private var lastSnapshotDiagAt = 0L
 
     init {
         location.start(
@@ -405,6 +406,7 @@ class NavigationSession(
     }
 
     private fun sendSnapshot(snapshot: EngineSnapshot) {
+        val now = SystemClock.elapsedRealtime()
         val flags = (if (snapshot.hasDestination) 1L else 0L) or
             (if (snapshot.hasUsableFix) 2L else 0L) or
             (if (snapshot.gnssStale) 4L else 0L) or
@@ -439,6 +441,13 @@ class NavigationSession(
         )
         if (!central.sendNavigationSnapshot(numeric, snapshot.roadName, snapshot.instruction)) {
             if (!_state.value.bleReady) logOnce("圆屏未连接，快照未发送")
+        } else if (now - lastSnapshotDiagAt > 5_000) {
+            lastSnapshotDiagAt = now
+            log(
+                "快照诊断 state=${snapshot.state} flags=$flags " +
+                    "token=${numeric[6]} gen=${numeric[7]} " +
+                    "dist=${numeric[9]} remain=${numeric[10]}",
+            )
         }
     }
 
