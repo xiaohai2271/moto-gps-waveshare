@@ -37,6 +37,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -116,7 +117,7 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
     if (showDevice) DeviceDetailsSheet(vm, bleState, onDismiss = { showDevice = false })
     if (showGateway) GatewaySettingsSheet(vm, onDismiss = { showGateway = false })
     if (showPrivacy) DataUseSheet(onDismiss = { showPrivacy = false })
-    if (showMapDownloads) MapDownloadsSheet(vm, onDismiss = { showMapDownloads = false })
+    if (showMapDownloads) MapDownloadsSheet(onDismiss = { showMapDownloads = false })
 }
 
 enum class MotoScreen { Home, RoutePreview, ActiveNavigation }
@@ -1191,7 +1192,11 @@ private fun LinkRow(label: String, url: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MapDownloadsSheet(vm: NavViewModel, onDismiss: () -> Unit) {
+private fun MapDownloadsSheet(onDismiss: () -> Unit) {
+    val vm: MapDownloadsViewModel = viewModel()
+    val state by vm.state.collectAsState()
+    LaunchedEffect(Unit) { vm.refresh() }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
             Box(Modifier.fillMaxWidth().height(48.dp)) {
@@ -1205,17 +1210,179 @@ private fun MapDownloadsSheet(vm: NavViewModel, onDismiss: () -> Unit) {
                     Text("完成", color = IosBlue)
                 }
             }
-            Text(
-                "城市和沿途地图在「地图」标签页下载与管理；骑行时自动加载圆屏周边的道路和建筑。",
-                fontSize = 15.sp,
-                color = IosSecondary,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-            GroupSection {
+
+            GroupSection(footer = "骑行时自动加载圆屏周边的道路和建筑。网络不可用时，使用已下载的地图。") {
                 Row(
-                    Modifier.fillMaxWidth().clickable(onClick = onDismiss)
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("🌐", fontSize = 16.sp)
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("自动加载周边地图", fontSize = 16.sp, color = Color(0xFF000000))
+                        Text(
+                            "已缓存 ${state.cachedBytes / 1024 / 1024} MiB · 离线包 ${state.packs.size} 个",
+                            fontSize = 13.sp,
+                            color = IosSecondary,
+                        )
+                    }
+                }
+            }
+
+            GroupSection(footer = "跨市骑行可先规划路线，只保存沿途约一公里范围的底图。离线底图不包含实时路况，规划新路线仍需要网络。") {
+                if (state.routeAvailable) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable(enabled = !state.downloading) { vm.downloadRoute() }
+                            .padding(horizontal = 16.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("🛣", fontSize = 16.sp, color = IosBlue)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("下载这条路线周边", fontSize = 16.sp, color = IosBlue)
+                            Text(
+                                state.routeName ?: "当前选择的路线",
+                                fontSize = 13.sp,
+                                color = IosSecondary,
+                            )
+                        }
+                    }
+                    RowDivider()
+                }
+                // City / district search (iOS MapCitySearchView).
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = state.query,
+                        onValueChange = vm::queryChanged,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontSize = 16.sp,
+                            color = Color(0xFF000000),
+                        ),
+                        decorationBox = { inner ->
+                            Box {
+                                if (state.query.isEmpty()) {
+                                    Text("搜索城市或区县，例如“济南”", fontSize = 16.sp, color = IosSecondary)
+                                }
+                                inner()
+                            }
+                        },
+                    )
+                }
+                when {
+                    state.searching -> {
+                        RowDivider()
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Text("正在搜索城市…", fontSize = 15.sp, color = IosSecondary)
+                        }
+                    }
+
+                    state.searchFailure != null -> {
+                        RowDivider()
+                        Text(
+                            state.searchFailure ?: "",
+                            fontSize = 15.sp,
+                            color = IosSecondary,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+                        )
+                    }
+
+                    else -> state.cities.forEach { city ->
+                        RowDivider()
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable(enabled = !state.downloading) { vm.downloadCity(city) }
+                                .padding(horizontal = 16.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(city.name, fontSize = 16.sp, color = Color(0xFF000000))
+                                Text(city.detail, fontSize = 13.sp, color = IosSecondary)
+                            }
+                            Text("下载", fontSize = 15.sp, color = IosBlue)
+                        }
+                    }
+                }
+            }
+
+            if (state.downloading || state.message != null) {
+                GroupSection {
+                    if (state.downloading) {
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 11.dp)) {
+                            state.progress?.let { progress ->
+                                androidx.compose.material3.LinearProgressIndicator(
+                                    progress = { progress.fraction },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "${progress.done}/${progress.total} 瓦片 · 失败 ${progress.failed}",
+                                    fontSize = 13.sp,
+                                    color = IosSecondary,
+                                )
+                            } ?: Text("正在下载…", fontSize = 15.sp, color = IosSecondary)
+                        }
+                    } else {
+                        Text(
+                            state.message ?: "",
+                            fontSize = 15.sp,
+                            color = IosSecondary,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+                        )
+                    }
+                }
+            }
+
+            GroupSection(header = "已保存") {
+                if (state.packs.isEmpty()) {
+                    Text(
+                        "还没有下载城市或路线地图",
+                        fontSize = 15.sp,
+                        color = IosSecondary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+                    )
+                } else {
+                    state.packs.forEachIndexed { index, pack ->
+                        if (index > 0) RowDivider()
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(pack.name, fontSize = 16.sp, color = Color(0xFF000000))
+                                Text(pack.detail, fontSize = 13.sp, color = IosSecondary)
+                                Text(
+                                    "${pack.bytes / 1024 / 1024} MiB · ${pack.tiles.size} 瓦片",
+                                    fontSize = 12.sp,
+                                    color = IosSecondary,
+                                )
+                            }
+                            TextButton(
+                                enabled = !state.downloading,
+                                onClick = { vm.delete(pack) },
+                            ) { Text("删除", color = IosRed) }
+                        }
+                    }
+                }
+                RowDivider()
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clickable(enabled = !state.downloading) { vm.clearTemporaryCache() }
                         .padding(horizontal = 16.dp, vertical = 11.dp),
-                ) { Text("打开地图标签页", fontSize = 16.sp, color = IosBlue) }
+                ) { Text("清理自动缓存", fontSize = 16.sp, color = IosBlue) }
+            }
+
+            GroupSection(footer = "建筑和道路的完整程度取决于当地地图数据。") {
+                LinkRow("© OpenStreetMap contributors", "https://www.openstreetmap.org/copyright")
+                RowDivider()
+                LinkRow("Protomaps 地图数据", "https://protomaps.com")
             }
         }
     }

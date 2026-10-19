@@ -1,34 +1,29 @@
 package dev.glimpse.motogps
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import dev.glimpse.motogps.ui.MapScreen
+import androidx.core.content.ContextCompat
 import dev.glimpse.motogps.ui.MotoAppScreen
-import dev.glimpse.motogps.ui.SelfCheckScreen
-import dev.glimpse.motogps.ProtocolSelfCheck
 
 class MainActivity : ComponentActivity() {
+
+    private val permissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val fixture = runCatching {
-            assets.open(ProtocolSelfCheck.ASSET_NAME)
-                .bufferedReader(Charsets.UTF_8).readText()
-                .let(ProtocolSelfCheck::parse)
-        }.getOrDefault(emptyMap())
 
         if (BuildConfig.DEBUG) {
             val app = application as MotoGpsApplication
@@ -51,38 +46,45 @@ class MainActivity : ComponentActivity() {
             intent?.getStringExtra("motoMedia")?.let { app.navigationSession.debugMediaAction(it) }
         }
 
+        requestMissingPermissions()
+
         setContent {
             MaterialTheme {
-                AppScaffold(fixture)
+                // iOS uses a single full-screen flow: no bottom tabs. Keep the
+                // content inside the safe drawing area so the status bar and the
+                // gesture bar never cover the navigation bar or the primary
+                // action button (targetSdk 36 draws edge-to-edge).
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.safeDrawing),
+                ) {
+                    MotoAppScreen()
+                }
             }
         }
     }
-}
 
-@Composable
-private fun AppScaffold(fixture: Map<String, String>) {
-    var tab by remember { mutableIntStateOf(0) }
-    val titles = listOf("出发", "地图", "自检")
-    // Icon per tab; getOrElse keeps this safe if a tab is added later.
-    val icons = listOf("➤", "▦", "✓")
-    Scaffold(
-        bottomBar = {
-            NavigationBar {
-                titles.forEachIndexed { index, title ->
-                    NavigationBarItem(
-                        selected = tab == index,
-                        onClick = { tab = index },
-                        icon = { Text(icons.getOrElse(index) { "•" }) },
-                        label = { Text(title) },
-                    )
-                }
+    /**
+     * Location, Bluetooth and notification permissions are requested once on
+     * first launch, mirroring the iOS permission prompts. Denying a permission
+     * never crashes the app: features degrade and the UI explains the state.
+     */
+    private fun requestMissingPermissions() {
+        val wanted = buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                add(Manifest.permission.BLUETOOTH_SCAN)
+                add(Manifest.permission.BLUETOOTH_CONNECT)
             }
-        },
-    ) { padding ->
-        when (tab) {
-            0 -> Box(Modifier.padding(bottom = padding.calculateBottomPadding())) { MotoAppScreen() }
-            1 -> MapScreen(Modifier.padding(padding))
-            else -> SelfCheckScreen(fixture, Modifier.padding(padding))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
+        val missing = wanted.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
     }
 }

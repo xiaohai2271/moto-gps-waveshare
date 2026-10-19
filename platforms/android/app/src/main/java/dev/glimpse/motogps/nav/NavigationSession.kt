@@ -554,6 +554,24 @@ class NavigationSession(
 
     fun gatewayCurrent(): String = gatewayStore.current()
 
+    /** Shared download store, so map packs follow the configured gateway. */
+    fun mapTiles(): dev.glimpse.motogps.map.MapTileStore = tileStore
+
+    fun gatewayClient(): GatewayClient = gateway
+
+    /**
+     * Geometry used by the route-corridor download: the active route while
+     * navigating, otherwise the selected preview candidate (iOS
+     * mapDownloadRoute). Points are GCJ-02, exactly as the gateway returned them.
+     */
+    fun routePolylineForDownload(): List<Pair<Double, Double>> {
+        val state = _state.value
+        return state.route?.polyline?.map { it.longitude to it.latitude }
+            ?: state.routeOptions.getOrNull(state.chosenOptionIndex)
+                ?.polyline?.map { it.longitude to it.latitude }
+            ?: emptyList()
+    }
+
     fun gatewayCustomised(): Boolean = gatewayStore.isCustomised()
 
     /** @return the saved URL; throws IllegalArgumentException on bad input. */
@@ -608,11 +626,25 @@ class NavigationSession(
         suppliedPreviewRoute = false
         _state.value = _state.value.copy(status = "规划中", places = emptyList())
         log("开始导航：${place.name}")
-        val result = engine.beginNavigation(place.longitude, place.latitude)
-        feedEngine(result)
+        // A JNI/protocol failure must surface as a status line, never a crash.
+        val begun = runCatching { engine.beginNavigation(place.longitude, place.latitude) }
+            .onFailure {
+                navigating = false
+                _state.value = _state.value.copy(
+                    isNavigating = false,
+                    navigationFailure = "导航核心启动失败：${it.message}",
+                )
+                log("导航核心启动失败：${it.message}")
+            }
+            .getOrNull()
+        if (begun == null) return
+        feedEngine(begun)
         scope.launch {
-            engine.setNetwork(2) // online
-            feedEngine(engine.pushFix(fix.longitude, fix.latitude, fix.accuracyM, fix.speedMps, fix.headingDeg, fix.timestampMs))
+            runCatching {
+                engine.setNetwork(2) // online
+                engine.pushFix(fix.longitude, fix.latitude, fix.accuracyM, fix.speedMps, fix.headingDeg, fix.timestampMs)
+            }.onSuccess { feedEngine(it) }
+                .onFailure { log("定位注入失败：${it.message}") }
         }
         ticker?.cancel()
         ticker = scope.launch {

@@ -110,6 +110,34 @@ class MapTileStore(
         return true
     }
 
+    /**
+     * Deletes cached tiles that no saved pack references (iOS
+     * `clearTemporaryCache`). Saved city/route maps stay usable offline.
+     * @return bytes freed.
+     */
+    fun clearTemporaryCache(): Long {
+        val referenced = readManifest().flatMap { it.tiles }.toSet()
+        var freed = 0L
+        tileDir.listFiles()?.forEach { file ->
+            val tile = parseTileName(file.name) ?: return@forEach
+            if (tile !in referenced) {
+                freed += file.length()
+                file.delete()
+            }
+        }
+        return freed
+    }
+
+    private fun parseTileName(name: String): MapTilePlanner.TileId? {
+        if (!name.endsWith(".json")) return null
+        val parts = name.removeSuffix(".json").split("-")
+        if (parts.size != 3) return null
+        val z = parts[0].toIntOrNull() ?: return null
+        val x = parts[1].toIntOrNull() ?: return null
+        val y = parts[2].toIntOrNull() ?: return null
+        return MapTilePlanner.TileId(z, x, y)
+    }
+
     private suspend fun fetchWithRetry(tile: MapTilePlanner.TileId): Boolean {
         repeat(MAX_ATTEMPTS) { attempt ->
             val body = runCatching { gateway.fetchTile(tile) }
