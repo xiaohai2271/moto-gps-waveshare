@@ -13,13 +13,11 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kLegacyCanvasSize = 360.0;
 constexpr double kUiScale =
     static_cast<double>(MOTO_UI_CANVAS_WIDTH) / kLegacyCanvasSize;
-constexpr double kVehicleX = MOTO_UI_CANVAS_WIDTH / 2.0;
-constexpr double kVehicleY = 196.0 * kUiScale;
-// A navigation minimap is a spatial frame of reference, so it must not jump
-// between zoom levels as a maneuver counter crosses an arbitrary threshold.
-// This fixed street-scale view shows roughly 400 m ahead on the 466 px round
-// display and is shared by the selected route and all context roads.
-constexpr double kMapPixelsPerMeter = 0.44 * kUiScale;
+constexpr double kBasePixelsPerMeter = 0.44 * kUiScale;
+// The rider sits 196/232 of the way down the default 232 px map viewport.
+// Follow the configured viewport height so shrinking the map keeps the same
+// forward-visibility ratio (docs/NAV_LAYOUT_EDITOR_PLAN.md §4.8).
+constexpr double kVehicleForwardRatio = 196.0 / 232.0;
 
 double radians(double degrees) { return degrees * kPi / 180.0; }
 
@@ -150,22 +148,49 @@ struct MapTransform {
   double origin_latitude_deg = 0.0;
   double origin_longitude_deg = 0.0;
   double longitude_pixels_per_degree = 1.0;
+  double latitude_pixels_per_degree = 1.0;
+  float vehicle_x = MOTO_UI_CANVAS_WIDTH / 2.0F;
+  float vehicle_y = 0.0F;
+  float min_y = 0.0F;
+  float max_y = static_cast<float>(MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT);
   float sin_heading = 0.0F;
   float cos_heading = 1.0F;
 };
 
-MapTransform map_transform(const NavSnapshot& snapshot) {
+MapTransform map_transform(const NavSnapshot& snapshot, bool north_up,
+                           int map_height_px, int zoom_percent) {
   const double finite_heading =
       std::isfinite(snapshot.heading_deg) ? snapshot.heading_deg : 0.0;
-  const double heading = radians(finite_heading);
+  // North-up leaves the map fixed; the vehicle marker carries the real phone
+  // heading instead. Heading-up rotates the whole map under a fixed marker.
+  const double heading = north_up ? 0.0 : radians(finite_heading);
+  const double zoom = std::clamp(zoom_percent, 50, 200) / 100.0;
+  const double pixels_per_meter = kBasePixelsPerMeter * zoom;
+  const double height = std::clamp(map_height_px,
+                                   MOTO_UI_LAYOUT_MIN_MAP_HEIGHT,
+                                   MOTO_UI_LAYOUT_MAX_MAP_HEIGHT);
   return {
       snapshot.route_view_origin.latitude_deg,
       snapshot.route_view_origin.longitude_deg,
       std::cos(radians(snapshot.route_view_origin.latitude_deg)) *
-          (kPi / 180.0 * kEarthRadiusM * kMapPixelsPerMeter),
+          (kPi / 180.0 * kEarthRadiusM * pixels_per_meter),
+      kPi / 180.0 * kEarthRadiusM * pixels_per_meter,
+      static_cast<float>(MOTO_UI_CANVAS_WIDTH / 2.0),
+      static_cast<float>(height * kVehicleForwardRatio),
+      0.0F,
+      static_cast<float>(height),
       static_cast<float>(std::sin(heading)),
       static_cast<float>(std::cos(heading)),
   };
+}
+
+bool point_inside_viewport(const moto_ui_point_t& point,
+                           const MapTransform& transform) {
+  // The map is a top-anchored viewport. Points below it (or above the screen)
+  // are clipped so the firmware never renders a fake line along the boundary.
+  return point.y >= 0 &&
+         static_cast<float>(point.y) < transform.max_y &&
+         point.x >= -2'000 && point.x <= 2'000;
 }
 
 moto_ui_point_t project_map_point(const Gcj02Point& point,
@@ -179,7 +204,7 @@ moto_ui_point_t project_map_point(const Gcj02Point& point,
       transform.longitude_pixels_per_degree);
   const float north = static_cast<float>(
       (point.latitude_deg - transform.origin_latitude_deg) *
-      (kPi / 180.0 * kEarthRadiusM * kMapPixelsPerMeter));
+      transform.latitude_pixels_per_degree);
 
   // Heading-up transform: the rider remains fixed and every real street
   // translates/rotates together under it, as on an automotive minimap.
@@ -187,8 +212,8 @@ moto_ui_point_t project_map_point(const Gcj02Point& point,
                        north * transform.sin_heading;
   const float forward = east * transform.sin_heading +
                          north * transform.cos_heading;
-  const float x = static_cast<float>(kVehicleX) + right;
-  const float y = static_cast<float>(kVehicleY) - forward;
+  const float x = transform.vehicle_x + right;
+  const float y = transform.vehicle_y - forward;
   return {
       static_cast<std::int16_t>(
           std::clamp(std::lround(x), -2'000L, 2'000L)),
@@ -207,11 +232,16 @@ void project_route_view(const NavSnapshot& snapshot,
 
   const std::size_t count = std::min<std::size_t>(
       snapshot.route_view_point_count, MOTO_UI_ROUTE_POINT_CAPACITY);
+  std::uint8_t accepted = 0;
   for (std::size_t i = 0; i < count; ++i) {
-    output.route_points[i] =
+    const moto_ui_point_t projected =
         project_map_point(snapshot.route_view_points[i], transform);
+    if (!point_inside_viewport(projected, transform)) continue;
+    output.route_points[accepted++] = projected;
   }
-  output.route_point_count = static_cast<std::uint8_t>(count);
+  // A clipped route that no longer reaches the rider is not navigable
+  // geometry; hide it rather than drawing a detached fragment.
+  output.route_point_count = accepted >= 2 ? accepted : 0;
 }
 
 void project_road_context(const NavSnapshot& snapshot,
@@ -225,35 +255,52 @@ void project_road_context(const NavSnapshot& snapshot,
     return;
   }
 
-  const std::size_t point_count = std::min<std::size_t>(
-      snapshot.road_context_point_count, MOTO_UI_ROAD_POINT_CAPACITY);
   const std::size_t polyline_count = std::min<std::size_t>(
       snapshot.road_context_polyline_count,
       MOTO_UI_ROAD_POLYLINE_CAPACITY);
-  for (std::size_t index = 0; index < point_count; ++index) {
-    output.road_points[index] =
-        project_map_point(snapshot.road_context_points[index], transform);
-  }
-
-  std::size_t accepted_polylines = 0;
+  std::uint8_t point_count = 0;
+  std::uint8_t accepted_polylines = 0;
   for (std::size_t index = 0; index < polyline_count; ++index) {
     const RoadContextPolylineSpan& span =
         snapshot.road_context_polylines[index];
     const std::size_t first = span.first_point_index;
     const std::size_t count = span.point_count;
-    if (count < 2 || first >= point_count || count > point_count - first) {
+    if (count < 2 || first >= snapshot.road_context_point_count ||
+        count > snapshot.road_context_point_count - first) {
       continue;
     }
-    output.road_polylines[accepted_polylines] = {
-        static_cast<std::uint8_t>(first),
-        static_cast<std::uint8_t>(count),
-        static_cast<std::uint8_t>(span.road_class),
-    };
-    ++accepted_polylines;
+    // Clip a polyline into its visible runs so a street that exits the map
+    // viewport never gains a synthetic boundary segment.
+    std::uint8_t run_start = point_count;
+    std::uint8_t run_count = 0;
+    for (std::size_t point_index = 0; point_index < count; ++point_index) {
+      const moto_ui_point_t projected = project_map_point(
+          snapshot.road_context_points[first + point_index], transform);
+      const bool visible = point_inside_viewport(projected, transform);
+      if (!visible) {
+        if (run_count >= 2 && accepted_polylines <
+                                  MOTO_UI_ROAD_POLYLINE_CAPACITY) {
+          output.road_polylines[accepted_polylines++] = {
+              run_start, run_count,
+              static_cast<std::uint8_t>(span.road_class)};
+        }
+        run_start = point_count;
+        run_count = 0;
+        continue;
+      }
+      if (point_count >= MOTO_UI_ROAD_POINT_CAPACITY) break;
+      output.road_points[point_count++] = projected;
+      ++run_count;
+    }
+    if (run_count >= 2 &&
+        accepted_polylines < MOTO_UI_ROAD_POLYLINE_CAPACITY) {
+      output.road_polylines[accepted_polylines++] = {
+          run_start, run_count, static_cast<std::uint8_t>(span.road_class)};
+    }
+    if (point_count >= MOTO_UI_ROAD_POINT_CAPACITY) break;
   }
-  output.road_point_count = static_cast<std::uint8_t>(point_count);
-  output.road_polyline_count =
-      static_cast<std::uint8_t>(accepted_polylines);
+  output.road_point_count = point_count;
+  output.road_polyline_count = accepted_polylines;
 }
 
 void project_building_context(const NavSnapshot& snapshot,
@@ -267,36 +314,43 @@ void project_building_context(const NavSnapshot& snapshot,
     return;
   }
 
-  const std::size_t point_count = std::min<std::size_t>(
-      snapshot.building_context_point_count,
-      MOTO_UI_BUILDING_POINT_CAPACITY);
   const std::size_t footprint_count = std::min<std::size_t>(
       snapshot.building_context_footprint_count,
       MOTO_UI_BUILDING_FOOTPRINT_CAPACITY);
-  for (std::size_t index = 0; index < point_count; ++index) {
-    output.building_points[index] = project_map_point(
-        snapshot.building_context_points[index], transform);
-  }
-
-  std::size_t accepted_footprints = 0;
+  std::uint8_t point_count = 0;
+  std::uint8_t accepted_footprints = 0;
   for (std::size_t index = 0; index < footprint_count; ++index) {
     const BuildingContextFootprintSpan& span =
         snapshot.building_context_footprints[index];
     const std::size_t first = span.first_point_index;
     const std::size_t count = span.point_count;
-    if (count < 3 || first >= point_count || count > point_count - first) {
+    if (count < 3 || first >= snapshot.building_context_point_count ||
+        count > snapshot.building_context_point_count - first) {
       continue;
     }
-    output.building_footprints[accepted_footprints] = {
-        static_cast<std::uint8_t>(first),
-        static_cast<std::uint8_t>(count),
-        static_cast<std::uint8_t>(span.building_class),
-    };
-    ++accepted_footprints;
+    if (point_count + count > MOTO_UI_BUILDING_POINT_CAPACITY) break;
+    const std::uint8_t footprint_start = point_count;
+    bool all_visible = true;
+    for (std::size_t point_index = 0; point_index < count; ++point_index) {
+      const moto_ui_point_t projected = project_map_point(
+          snapshot.building_context_points[first + point_index], transform);
+      if (!point_inside_viewport(projected, transform)) {
+        all_visible = false;
+        break;
+      }
+      output.building_points[point_count++] = projected;
+    }
+    if (!all_visible) {
+      // A partial footprint would render as a wrong polygon; drop it whole.
+      point_count = footprint_start;
+      continue;
+    }
+    output.building_footprints[accepted_footprints++] = {
+        footprint_start, static_cast<std::uint8_t>(count),
+        static_cast<std::uint8_t>(span.building_class)};
   }
-  output.building_point_count = static_cast<std::uint8_t>(point_count);
-  output.building_footprint_count =
-      static_cast<std::uint8_t>(accepted_footprints);
+  output.building_point_count = point_count;
+  output.building_footprint_count = accepted_footprints;
 }
 
 }  // namespace
@@ -351,13 +405,23 @@ void NavPresenter::update(const NavSnapshot& snapshot) {
   // Route, roads and buildings share one rider-centred transform. Besides
   // guaranteeing exact layer alignment, this avoids repeating trigonometry
   // hundreds of times on every high-rate IMU frame.
-  const MapTransform transform = map_transform(snapshot);
+  const MapTransform transform =
+      map_transform(snapshot, north_up_, map_height_px_, zoom_percent_);
   project_route_view(snapshot, transform, ui_state_);
   project_road_context(snapshot, transform, ui_state_);
   project_building_context(snapshot, transform, ui_state_);
   ui_state_.road_name = road_name_.empty() ? nullptr : road_name_.c_str();
   ui_state_.next_road_name =
       next_road_name_.empty() ? nullptr : next_road_name_.c_str();
+}
+
+void NavPresenter::set_view_config(bool north_up, int map_height_px,
+                                   int zoom_percent) {
+  north_up_ = north_up;
+  map_height_px_ = std::clamp(map_height_px,
+                              static_cast<int>(MOTO_UI_LAYOUT_MIN_MAP_HEIGHT),
+                              static_cast<int>(MOTO_UI_LAYOUT_MAX_MAP_HEIGHT));
+  zoom_percent_ = std::clamp(zoom_percent, 50, 200);
 }
 
 const moto_ui_state_t& NavPresenter::ui_state() const { return ui_state_; }
