@@ -73,9 +73,20 @@ class GatewayException(val error: GatewayError) :
 
 /** Parses the gateway's JSON payloads. Pure functions, unit-testable on the JVM. */
 object GatewayJson {
+    /**
+     * Some endpoints (notably `GET /v1/map/cities`) omit `protocol_version`
+     * entirely, which the iOS client tolerates. Only reject an explicitly
+     * unsupported version so a missing field never breaks a working endpoint.
+     */
+    private fun checkProtocol(root: JSONObject) {
+        if (root.has("protocol_version") && root.optInt("protocol_version", 1) != 1) {
+            throw IllegalArgumentException("protocol version")
+        }
+    }
+
     fun parsePlaces(body: String): List<Place> {
         val root = JSONObject(body)
-        if (root.getInt("protocol_version") != 1) throw IllegalArgumentException("protocol version")
+        checkProtocol(root)
         val array = root.getJSONArray("places")
         return List(array.length()) { i ->
             val o = array.getJSONObject(i)
@@ -97,7 +108,7 @@ object GatewayJson {
 
     fun parseCities(body: String): List<CityArea> {
         val root = JSONObject(body)
-        if (root.getInt("protocol_version") != 1) throw IllegalArgumentException("protocol version")
+        checkProtocol(root)
         val array = root.getJSONArray("cities")
         return List(array.length()) { i ->
             val o = array.getJSONObject(i)
@@ -173,7 +184,7 @@ object GatewayJson {
 
     fun parseRouteOptions(body: String, expectedRequestId: Int): List<GatewayRoute> {
         val root = JSONObject(body)
-        if (root.getInt("protocol_version") != 1) throw IllegalArgumentException("protocol version")
+        checkProtocol(root)
         if (root.getInt("request_id") != expectedRequestId) {
             throw IllegalArgumentException("request_id echo mismatch")
         }
@@ -186,7 +197,7 @@ object GatewayJson {
 
     fun parseSingleRoute(body: String, expectedRequestId: Int): GatewayRoute {
         val root = JSONObject(body)
-        if (root.getInt("protocol_version") != 1) throw IllegalArgumentException("protocol version")
+        checkProtocol(root)
         if (root.getInt("request_id") != expectedRequestId) {
             throw IllegalArgumentException("request_id echo mismatch")
         }
@@ -258,3 +269,4 @@ object GatewayJson {
         .put("longitude_deg", lon)
         .put("latitude_deg", lat)
 }
+

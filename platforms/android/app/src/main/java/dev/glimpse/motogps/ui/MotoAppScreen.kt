@@ -1253,12 +1253,17 @@ private fun MapDownloadsSheet(onDismiss: () -> Unit) {
                     RowDivider()
                 }
                 // City / district search (iOS MapCitySearchView).
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("🔍", fontSize = 16.sp, color = IosSecondary)
                     androidx.compose.foundation.text.BasicTextField(
                         value = state.query,
                         onValueChange = vm::queryChanged,
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.weight(1f),
                         textStyle = androidx.compose.ui.text.TextStyle(
                             fontSize = 16.sp,
                             color = Color(0xFF000000),
@@ -1272,6 +1277,14 @@ private fun MapDownloadsSheet(onDismiss: () -> Unit) {
                             }
                         },
                     )
+                    if (state.query.isNotEmpty()) {
+                        Text(
+                            "✕",
+                            fontSize = 15.sp,
+                            color = IosSecondary,
+                            modifier = Modifier.clickable { vm.queryChanged("") }.padding(6.dp),
+                        )
+                    }
                 }
                 when {
                     state.searching -> {

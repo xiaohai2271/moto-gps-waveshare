@@ -69,24 +69,37 @@ class MapDownloadsViewModel(application: Application) : AndroidViewModel(applica
         }
         searchJob = viewModelScope.launch {
             delay(350)
-            _state.value = _state.value.copy(searching = true, searchFailure = null)
-            runCatching { session.gatewayClient().searchCities(keywords) }
-                .onSuccess { cities ->
-                    _state.value = _state.value.copy(
-                        cities = cities.take(30),
-                        searching = false,
-                        searchFailure = if (cities.isEmpty()) "未找到城市或区县" else null,
-                    )
-                }
-                .onFailure { error ->
-                    android.util.Log.w("MotoGpsMap", "city search failed: ${error.message}")
-                    _state.value = _state.value.copy(
-                        searching = false,
-                        cities = emptyList(),
-                        searchFailure = "暂时无法搜索城市，请检查网络后重试。",
-                    )
-                }
+            searchCitiesWithRetry(keywords)
         }
+    }
+
+    /**
+     * One free retry: the first request after a cold start or a network switch
+     * often fails while the radio comes up, and a silent "network error" for a
+     * searchable city looks like a broken feature.
+     */
+    private suspend fun searchCitiesWithRetry(keywords: String, attempts: Int = 2) {
+        _state.value = _state.value.copy(searching = true, searchFailure = null)
+        var last: Throwable? = null
+        repeat(attempts) { index ->
+            val result = runCatching { session.gatewayClient().searchCities(keywords) }
+            result.onSuccess { cities ->
+                _state.value = _state.value.copy(
+                    cities = cities.take(30),
+                    searching = false,
+                    searchFailure = if (cities.isEmpty()) "未找到城市或区县" else null,
+                )
+                return
+            }
+            last = result.exceptionOrNull()
+            android.util.Log.w("MotoGpsMap", "city search attempt ${index + 1}: ${last?.message}")
+            if (index < attempts - 1) delay(900)
+        }
+        _state.value = _state.value.copy(
+            searching = false,
+            cities = emptyList(),
+            searchFailure = "暂时无法搜索城市（${last?.message ?: "网络错误"}），请重试。",
+        )
     }
 
     /** Re-runs the last city search (iOS shows a 重试 button after a failure). */
@@ -109,6 +122,16 @@ class MapDownloadsViewModel(application: Application) : AndroidViewModel(applica
                 _state.value = _state.value.copy(
                     downloading = false,
                     message = "范围过大或坐标非法：${error.message}",
+                )
+                return@launch
+            }
+            // A whole prefecture at z15 is tens of thousands of tiles; the
+            // gateway would need hours and the UI would look frozen. Ask for a
+            // district instead, matching the iOS guidance text.
+            if (tiles.size > MAX_CITY_TILES) {
+                _state.value = _state.value.copy(
+                    downloading = false,
+                    message = "范围过大（约 ${tiles.size} 个瓦片），请搜索具体区县后再下载。",
                 )
                 return@launch
             }
@@ -186,5 +209,10 @@ class MapDownloadsViewModel(application: Application) : AndroidViewModel(applica
 
     fun clearMessage() {
         _state.value = _state.value.copy(message = null)
+    }
+
+    companion object {
+        /** Above this the download would take hours; ask for a district instead. */
+        const val MAX_CITY_TILES = 4_000
     }
 }

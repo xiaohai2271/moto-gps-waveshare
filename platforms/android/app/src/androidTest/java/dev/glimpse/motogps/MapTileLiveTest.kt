@@ -42,6 +42,23 @@ class MapTileLiveTest {
     }
 
     @Test
+    fun citySearchFindsHangzhou() = runBlocking {
+        val client = GatewayClient()
+        val result = runCatching { client.searchCities("杭州") }
+        assertTrue("city search failed: ${result.exceptionOrNull()}", result.isSuccess)
+        val cities = result.getOrThrow()
+        assertTrue("expected at least one city, got $cities", cities.isNotEmpty())
+        assertTrue(
+            "expected Hangzhou in ${cities.map { it.name }}",
+            cities.any { it.name.contains("杭州") },
+        )
+        // The whole-prefecture range is far too big for a phone download, which
+        // is why the UI asks for a district instead of silently running for hours.
+        val tiles = MapTilePlanner.boundsWgs84(cities.first().west, cities.first().south, cities.first().east, cities.first().north)
+        assertTrue("expected a large range for a prefecture, got ${tiles.size}", tiles.size > 4_000)
+    }
+
+    @Test
     fun downloadsOneTileIntoTheCache() = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext

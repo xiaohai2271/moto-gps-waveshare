@@ -61,6 +61,33 @@ class GatewayJsonTest {
     }
 
     @Test
+    fun parsesCitiesWithoutProtocolVersion() {
+        // Regression: the live gateway's /v1/map/cities reply has no
+        // protocol_version, and requiring it made city search always fail
+        // (org.json.JSONException: No value for protocol_version).
+        val body = """
+            {"cities": [{"id": "330100", "name": "杭州市", "detail": "全市范围",
+              "bounds_wgs84": [118.339745, 29.1915559, 120.7176824, 30.565533]}]}
+        """.trimIndent()
+        val cities = GatewayJson.parseCities(body)
+        assertEquals(1, cities.size)
+        assertEquals("杭州市", cities[0].name)
+        assertEquals(118.339745, cities[0].west, 1e-9)
+        assertEquals(30.565533, cities[0].north, 1e-9)
+    }
+
+    @Test
+    fun rejectsExplicitlyUnsupportedProtocolVersion() {
+        var failed = false
+        try {
+            GatewayJson.parseCities("""{"protocol_version": 2, "cities": []}""")
+        } catch (e: IllegalArgumentException) {
+            failed = true
+        }
+        assertTrue(failed)
+    }
+
+    @Test
     fun parsesPlacesAsWgs84() {
         val body = """
             {
