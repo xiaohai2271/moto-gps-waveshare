@@ -9,6 +9,7 @@
 
 #include "lvgl.h"
 
+
 #include "accel_filter.h"
 #include "layout_geometry.h"
 
@@ -19,6 +20,20 @@
 extern "C" {
 extern const lv_font_t moto_font_nav_16;
 extern const lv_font_t moto_font_nav_20;
+}
+
+// Platform-neutral trace hook: the shared build (web/iOS/host tests) leaves it
+// empty; the ESP32 build overrides it in platforms/esp32/main to reach ESP_LOG.
+// GCC/Clang (ESP32, web, iOS) use a weak symbol; MSVC has no such spelling, so
+// it just gets a strong empty definition there.
+#if defined(__GNUC__) || defined(__clang__)
+#define MOTO_NAV_UI_TRACE_WEAK __attribute__((weak))
+#else
+#define MOTO_NAV_UI_TRACE_WEAK
+#endif
+
+extern "C" MOTO_NAV_UI_TRACE_WEAK void navui_trace(const char *message) {
+    (void)message;
 }
 
 namespace {
@@ -134,8 +149,7 @@ struct Ui {
     std::uint32_t nav_route_identity = 0;
     std::uint32_t nav_route_generation = 0;
     lv_timer_t *nav_route_motion_timer = nullptr;
-    lv_obj_t *nav_marker = nullptr;
-    lv_obj_t *nav_status = nullptr;
+    lv_obj_t *nav_marker = nullptr;    lv_obj_t *nav_status = nullptr;
     lv_obj_t *nav_distance = nullptr;
     lv_obj_t *nav_unit = nullptr;
     lv_obj_t *nav_maneuver = nullptr;
@@ -384,6 +398,21 @@ void apply_arc(lv_obj_t *arc, const moto_ui_component_layout_t &c, int diameter,
     lv_obj_set_style_arc_opa(arc, opa, LV_PART_INDICATOR);
 }
 
+// §4.3: a size tier changes the object box AND the text font together, so an S
+// component stays legible instead of shrinking the box around an L glyph.
+// Only the fonts already linked into the build are used (no new font assets):
+// Montserrat 16/28/48 for values and Montserrat 20 for captions.
+const lv_font_t *font_for_tier(int size) {
+    return size == MOTO_UI_SIZE_S   ? &lv_font_montserrat_16
+           : size == MOTO_UI_SIZE_L ? &lv_font_montserrat_48
+                                    : &lv_font_montserrat_28;
+}
+
+const lv_font_t *caption_font_for_tier(int size) {
+    return size == MOTO_UI_SIZE_S ? &lv_font_montserrat_16
+                                  : &lv_font_montserrat_20;
+}
+
 void apply_component(lv_obj_t *object, const moto_ui_component_layout_t &c,
                      lv_obj_t *secondary = nullptr) {
     if(object == nullptr) return;
@@ -399,6 +428,10 @@ void apply_component(lv_obj_t *object, const moto_ui_component_layout_t &c,
         return;
     }
     place_component(object, c);
+    lv_obj_set_style_text_font(object, font_for_tier(c.size), 0);
+    if(secondary != nullptr) {
+        lv_obj_set_style_text_font(secondary, caption_font_for_tier(c.size), 0);
+    }
     lv_obj_set_style_opa(object, opacity_opa(c.opacity), 0);
     if(secondary != nullptr) {
         lv_obj_set_style_opa(secondary, opacity_opa(c.opacity), 0);
@@ -449,32 +482,49 @@ const char *cardinal_name(std::uint16_t heading) {
     return names[((heading + 22U) / 45U) % 8U];
 }
 
+// Current vehicle-marker rotation in degrees, set by update_navigation() and
+// consumed by draw_vehicle_marker() (file-scope because the draw callback has
+// no access to the ui struct which is declared further down).
+int g_marker_rotation_deg = 0;
+
 void draw_vehicle_marker(lv_event_t *event) {
     lv_obj_t *object = lv_event_get_target_obj(event);
     lv_area_t area;
     lv_obj_get_coords(object, &area);
     lv_layer_t *layer = lv_event_get_layer(event);
 
-    lv_draw_triangle_dsc_t triangle;
-    lv_draw_triangle_dsc_init(&triangle);
-    triangle.color = kBlack;
-    triangle.opa = LV_OPA_COVER;
-    triangle.p[0] = {static_cast<lv_value_precise_t>(area.x1 + px(17)),
-                     static_cast<lv_value_precise_t>(area.y1)};
-    triangle.p[1] = {static_cast<lv_value_precise_t>(area.x1),
-                     static_cast<lv_value_precise_t>(area.y1 + px(36))};
-    triangle.p[2] = {static_cast<lv_value_precise_t>(area.x1 + px(34)),
-                     static_cast<lv_value_precise_t>(area.y1 + px(36))};
-    lv_draw_triangle(layer, &triangle);
+    // Rotate the arrow around the object centre in the draw callback instead
+    // of using style transform_rotation: on this LVGL build a transformed
+    // child of the map canvas rotated the whole page (device-verified bug).
+    // Angles are clockwise from "pointing up", matching the compass heading.
+    const double heading_rad =
+        static_cast<double>(g_marker_rotation_deg) * kPi / 180.0;
+    const double cos_a = std::cos(heading_rad);
+    const double sin_a = std::sin(heading_rad);
+    const double centre_x = static_cast<double>(area.x1 + area.x2 + 1) / 2.0;
+    const double centre_y = static_cast<double>(area.y1 + area.y2 + 1) / 2.0;
 
-    triangle.color = kWhite;
-    triangle.p[0] = {static_cast<lv_value_precise_t>(area.x1 + px(17)),
-                     static_cast<lv_value_precise_t>(area.y1 + px(5))};
-    triangle.p[1] = {static_cast<lv_value_precise_t>(area.x1 + px(6)),
-                     static_cast<lv_value_precise_t>(area.y1 + px(30))};
-    triangle.p[2] = {static_cast<lv_value_precise_t>(area.x1 + px(28)),
-                     static_cast<lv_value_precise_t>(area.y1 + px(30))};
-    lv_draw_triangle(layer, &triangle);
+    // Local arrow coordinates in px-design units, origin at centre, y up.
+    // Outline triangle then the white inset, same shape as before.
+    const double outline[3][2] = {{0.0, 18.5}, {-17.0, -18.0}, {17.0, -18.0}};
+    const double inset[3][2] = {{0.0, 13.5}, {-11.5, -12.0}, {11.5, -12.0}};
+
+    auto draw_arrow = [&](const double(&points)[3][2], lv_color_t color) {
+        lv_draw_triangle_dsc_t triangle;
+        lv_draw_triangle_dsc_init(&triangle);
+        triangle.color = color;
+        triangle.opa = LV_OPA_COVER;
+        for(int i = 0; i < 3; ++i) {
+            // Screen y grows downward: negate the local y.
+            const double rx = points[i][0] * cos_a + points[i][1] * sin_a;
+            const double ry = -points[i][0] * sin_a + points[i][1] * cos_a;
+            triangle.p[i] = {static_cast<lv_value_precise_t>(centre_x + rx * px(1.0)),
+                             static_cast<lv_value_precise_t>(centre_y - ry * px(1.0))};
+        }
+        lv_draw_triangle(layer, &triangle);
+    };
+    draw_arrow(outline, kBlack);
+    draw_arrow(inset, kWhite);
 }
 
 void update_page_dots() {
@@ -531,6 +581,7 @@ void show_page(moto_ui_page_t page, bool reveal_on_same_page = false) {
     }
     const bool changed = page != ui.page;
     ui.page = page;
+    { char buf[80]; std::snprintf(buf, sizeof(buf), "show_page -> %d", static_cast<int>(page)); navui_trace(buf); }
     for(int i = 0; i < MOTO_UI_PAGE_COUNT; ++i) {
         if(i == static_cast<int>(page)) {
             lv_obj_remove_flag(ui.pages[i], LV_OBJ_FLAG_HIDDEN);
@@ -1457,6 +1508,7 @@ void apply_lifecycle_content(LifecycleVisual visual) {
                                     ? kGreen : kSoft,
                                 0);
     lv_obj_invalidate(ui.nav_lifecycle_symbol);
+    { char buf[160]; std::snprintf(buf, sizeof(buf), "lifecycle visual=%d kicker=[%s] title=[%s]", static_cast<int>(visual), kicker, title); navui_trace(buf); }
 }
 
 void lifecycle_fade_in();
@@ -1738,9 +1790,11 @@ void update_navigation(const moto_ui_state_t *state) {
     // phone heading (plan §4.7). Heading-up keeps the marker pointing up
     // because the whole map rotates under it.
     if(ui.nav_marker != nullptr) {
-        const int rotation_tenths =
-            ui.layout.north_up ? static_cast<int>(state->heading_deg) * 10 : 0;
-        lv_obj_set_style_transform_rotation(ui.nav_marker, rotation_tenths, 0);
+        g_marker_rotation_deg =
+            ui.layout.north_up ? static_cast<int>(state->heading_deg) : 0;
+        // Repaint the marker through its draw callback; the callback rotates
+        // the arrow itself (style transform_rotation rotated the whole page).
+        lv_obj_invalidate(ui.nav_marker);
     }
 
     // Never suggest "go straight for 0 m" while there is no route. Waiting is
@@ -2037,10 +2091,15 @@ void create_navigation_page() {
                                                  kRouteMotionFrameMs,
                                                  nullptr);
 
-    ui.nav_marker = lv_obj_create(ui.nav_route_layer);
+    // The marker is its own layer, not a child of the basemap or the route
+    // layer: neither map_opacity nor route_opacity may dim the rider (§6.2).
+    ui.nav_marker = lv_obj_create(ui.nav_map);
     lv_obj_remove_style_all(ui.nav_marker);
-    lv_obj_set_size(ui.nav_marker, px(35), px(37));
-    lv_obj_set_pos(ui.nav_marker, px(163), px(177));
+    // Oversized square so a rotated arrow (radius ~26 design px) never clips.
+    // Exact y is re-set in apply_layout_internal() from the map height.
+    lv_obj_set_size(ui.nav_marker, px(54), px(54));
+    lv_obj_set_pos(ui.nav_marker, MOTO_UI_CANVAS_WIDTH / 2 - px(27),
+                   MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT * 196 / 232 - px(27));
     lv_obj_clear_flag(ui.nav_marker, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(ui.nav_marker, draw_vehicle_marker,
                         LV_EVENT_DRAW_MAIN_END, nullptr);
@@ -2470,6 +2529,7 @@ extern "C" void moto_nav_ui_show_power_off_screen(void) {
 }
 
 extern "C" void moto_nav_ui_create(void) {
+    navui_trace("create: enter");
     reset_ui_state();
     ui.screen = lv_screen_active();
     lv_obj_clean(ui.screen);
@@ -2492,6 +2552,7 @@ extern "C" void moto_nav_ui_create(void) {
     // necessarily to its page. Register once across the finished tree so any
     // touch reliably wakes the dots, including the map and music controls.
     install_interaction_wake(ui.screen);
+    navui_trace("create: before apply_layout");
 
     moto_music_state_t initial_music = {
         "APPLE MUSIC", "NIGHT RIDE", "PHONE NOW PLAYING", 1, 1, 0, 0,
@@ -2504,6 +2565,7 @@ extern "C" void moto_nav_ui_create(void) {
     initial.maneuver = MOTO_MANEUVER_STRAIGHT;
     initial.traffic = MOTO_TRAFFIC_UNKNOWN;
     moto_nav_ui_set_state(&initial);
+    navui_trace("create: apply done");
     show_page(MOTO_UI_PAGE_NAVIGATION, true);
 }
 
@@ -2628,6 +2690,7 @@ extern "C" void moto_nav_ui_set_music_page_enabled(uint8_t enabled) {
 namespace {
 
 void apply_layout_internal(const moto_ui_layout_t *incoming) {
+    navui_trace("apply: enter");
     if(incoming == nullptr) return;
     moto_ui_layout_t next = *incoming;
 
@@ -2660,6 +2723,13 @@ void apply_layout_internal(const moto_ui_layout_t *incoming) {
     const int map_height = static_cast<int>(ui.layout.map_height_px);
     if(ui.nav_map != nullptr) {
         lv_obj_set_height(ui.nav_map, map_height);
+        // The map viewport itself can be switched off entirely (protocol flag
+        // bit2); the components below it then float over the plain page.
+        if(ui.layout.map_visible) {
+            lv_obj_clear_flag(ui.nav_map, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(ui.nav_map, LV_OBJ_FLAG_HIDDEN);
+        }
     }
     if(ui.nav_map_base != nullptr) {
         lv_obj_set_height(ui.nav_map_base, map_height);
@@ -2813,16 +2883,20 @@ void apply_layout_internal(const moto_ui_layout_t *incoming) {
         }
     }
 
+    navui_trace("apply: components done");
     // Music page visibility = user switch AND media capability.
     ui.music_page_enabled =
         ui.layout.music_page_enabled != 0 && ui.media_music_available;
     update_page_dots();
     align_accel_readout();
     // The projection depends on the viewport height; the next motion frame
-    // picks it up through PhoneNavBridge's view configuration.
+    // picks it up through PhoneNavBridge's view configuration. The rider sits
+    // 196/232 of the way down the viewport (§4.8), so the marker follows the
+    // same ratio the presenter uses for the route projection.
     if(ui.nav_marker != nullptr) {
-        lv_obj_align(ui.nav_marker, LV_ALIGN_TOP_LEFT, px(163),
-                     px(static_cast<int>(map_height) * 196 / 232));
+        const int marker_y = map_height * 196 / 232;
+        lv_obj_set_pos(ui.nav_marker, MOTO_UI_CANVAS_WIDTH / 2 - px(27),
+                       marker_y - px(27));
     }
 }
 
