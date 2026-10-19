@@ -8,6 +8,7 @@
 #include "moto/ble_protocol/ble_protocol.hpp"
 #include "moto_nav_presenter.hpp"
 #include "motion_heading_fusion.hpp"
+#include "ui_layout_store.h"
 
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
@@ -37,6 +38,12 @@ class PhoneNavBridge {
   void update_demo(std::uint64_t now_ms);
   moto::ble::AckStatus on_message(
       const moto::ble::ReassembledMessage& message);
+  // Applies the persisted layout (or the built-in default) to the renderer and
+  // the projection. Call once after the UI exists; safe to call again.
+  void restore_layout();
+  // Layout bookkeeping, evaluated on the 40 Hz presentation path so a pushed
+  // layout is applied, persisted and acknowledged off the BLE worker.
+  void apply_pending_layout();
 
  private:
   struct GeometryAssembly {
@@ -80,6 +87,15 @@ class PhoneNavBridge {
   void send_music_command(moto_music_command_t command);
   void send_device_command(moto::ble::DeviceCommand command);
   void set_demo_active(bool active);
+  // Maps one accepted phone layout onto the renderer's C ABI struct and
+  // re-projects the view. Requires the board lock when it may touch LVGL.
+  void apply_layout_locked(const moto_ui_layout_t& layout);
+  moto::ble::AckStatus consume_ui_layout(
+      const moto::ble::UiLayout& input);
+  void send_ui_layout_state();
+  // Built-in default layout (docs §4.10). Mirrors Android LayoutDefaults.
+  static moto_ui_layout_t default_layout();
+  static void store_layout_to_renderer(const moto_ui_layout_t& layout);
   // Fill an existing member in place. NavSnapshot contains the bounded map
   // window and is intentionally several kilobytes; returning one by value can
   // overflow the small FreeRTOS demo-task stack as road density grows.
@@ -127,4 +143,18 @@ class PhoneNavBridge {
   moto::nav::NavSnapshot snapshot_before_demo_{};
   std::uint64_t demo_started_ms_ = 0;
   bool demo_active_ = false;
+
+  // --- Editable navigation-page layout (docs §5.3/§5.6/§6.5) ---------------
+  // A pushed layout is accepted immediately (AckStatus::Ok) but applied and
+  // persisted one frame later, and only after it has been stable for the
+  // debounce window: a drag burst collapses into a single flash write.
+  moto::ble::UiLayout pending_layout_{};
+  std::uint16_t device_layout_revision_ = 0;
+  bool layout_nvs_saved_ = false;
+  bool layout_dirty_ = false;
+  std::uint64_t layout_dirty_since_ms_ = 0;
+  // Revision of the layout currently in effect. The phone's revision is
+  // monotonic, so an older one is not rolled back (plan §6.5).
+  std::uint16_t applied_layout_revision_ = 0;
+  moto_ui_layout_t render_layout_{};
 };

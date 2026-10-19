@@ -23,6 +23,7 @@ idf_component_register(
         "board_port_waveshare_1_75c.cpp"
         "motion_heading_sensor.cpp"
         "phone_nav_bridge.cpp"
+        "ui_layout_store.cpp"
         "${MOTO_SHARED_BLE_PROTOCOL_SOURCE}"
         "${MOTO_SHARED_NAV_PRESENTER_SOURCE}"
         "${MOTO_SHARED_UI_FONT}"

@@ -39,6 +39,8 @@ bool media_like_available = false;
 std::string media_source;
 std::string media_title;
 std::string media_artist;
+moto_ui_layout_t applied_layout{};
+int layout_apply_count = 0;
 
 }  // namespace
 
@@ -151,6 +153,21 @@ extern "C" void moto_nav_ui_set_demo_change_callback(
   demo_callback_context = context;
 }
 
+// Layout engine: record what the renderer would have been told to apply, so a
+// bridge test can assert the mapping without linking the LVGL UI.
+extern "C" void moto_nav_ui_apply_layout(const moto_ui_layout_t* layout) {
+  if (layout == nullptr) {
+    return;
+  }
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  applied_layout = *layout;
+  ++layout_apply_count;
+}
+
+extern "C" const moto_ui_layout_t* moto_nav_ui_current_layout(void) {
+  return &applied_layout;
+}
+
 namespace moto::test {
 
 void reset_phone_nav_bridge_probe() {
@@ -178,6 +195,8 @@ void reset_phone_nav_bridge_probe() {
   media_source.clear();
   media_title.clear();
   media_artist.clear();
+  applied_layout = {};
+  layout_apply_count = 0;
 }
 
 void emit_page_change(moto_ui_page_t page) {
@@ -226,6 +245,16 @@ void emit_demo_change(bool enabled) {
 int phone_nav_bridge_apply_count() {
   const std::lock_guard<std::mutex> lock(probe_mutex);
   return apply_count;
+}
+
+int phone_nav_bridge_layout_apply_count() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  return layout_apply_count;
+}
+
+moto_ui_layout_t phone_nav_bridge_last_applied_layout() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  return applied_layout;
 }
 
 int phone_nav_bridge_board_lock_count() {

@@ -11,6 +11,8 @@ void emit_page_change(moto_ui_page_t page);
 void emit_music_command(moto_music_command_t command);
 void emit_demo_change(bool enabled);
 int phone_nav_bridge_apply_count();
+int phone_nav_bridge_layout_apply_count();
+moto_ui_layout_t phone_nav_bridge_last_applied_layout();
 int phone_nav_bridge_board_lock_count();
 void phone_nav_bridge_set_board_lock_available(bool available);
 std::string phone_nav_bridge_last_road_name();

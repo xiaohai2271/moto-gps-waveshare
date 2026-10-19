@@ -52,6 +52,27 @@ extern "C" void moto_nav_ui_set_demo_change_callback(
     moto_demo_change_callback_t,
     void*) {}
 
+// Layout engine: the stub records the last applied layout so bridge tests can
+// assert what would reach the renderer without linking the LVGL UI.
+namespace {
+
+moto_ui_layout_t applied_layout{};
+int layout_apply_count = 0;
+
+}  // namespace
+
+extern "C" void moto_nav_ui_apply_layout(const moto_ui_layout_t* layout) {
+  if (layout == nullptr) {
+    return;
+  }
+  applied_layout = *layout;
+  ++layout_apply_count;
+}
+
+extern "C" const moto_ui_layout_t* moto_nav_ui_current_layout(void) {
+  return &applied_layout;
+}
+
 namespace moto::test {
 
 void reset_nav_ui_probe() {
@@ -59,12 +80,20 @@ void reset_nav_ui_probe() {
   applied_state = {};
   applied_road_name.clear();
   applied_next_road_name.clear();
+  applied_layout = {};
+  layout_apply_count = 0;
 }
 
 int nav_ui_apply_count() { return apply_count; }
 
 const moto_ui_state_t& last_applied_nav_ui_state() {
   return applied_state;
+}
+
+int nav_ui_layout_apply_count() { return layout_apply_count; }
+
+const moto_ui_layout_t& last_applied_nav_ui_layout() {
+  return applied_layout;
 }
 
 }  // namespace moto::test

@@ -218,6 +218,281 @@ void test_clearing_geometry_leaves_no_residue() {
   CHECK(redrawn.hash == route_frame.hash);
 }
 
+// ---------------------------------------------------------------------------
+// Editable layout engine (plan §4 / §6.2).
+//
+// apply_layout() is the single entry point that positions, sizes, styles and
+// shows/hides the eight editable components. It must never rebuild objects and
+// must be safe to call repeatedly with the same or a mutated layout.
+// ---------------------------------------------------------------------------
+
+void test_layout_defaults_match_the_documented_baseline() {
+  // Before any push the device shows the §4.10 default layout, which mirrors
+  // Android LayoutDefaults so an unpushed device matches the editor preview.
+  const moto_ui_layout_t* layout = moto_nav_ui_current_layout();
+  CHECK(layout != nullptr);
+  if (layout == nullptr) return;
+  CHECK(layout->north_up == 1);
+  CHECK(layout->music_page_enabled == 1);
+  CHECK(layout->map_height_px == MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT);
+  CHECK(layout->map_opacity == 100);
+  CHECK(layout->route_r == 0xFF && layout->route_g == 0xFF &&
+        layout->route_b == 0xFF);
+  CHECK(layout->route_width_px == 6);
+  CHECK(layout->route_opacity == 100);
+  CHECK(layout->street_r == 0x8E && layout->street_g == 0x8E &&
+        layout->street_b == 0x93);
+  CHECK(layout->street_width_px == 3);
+  CHECK(layout->street_opacity == 35);
+  CHECK(layout->building_opacity == 25);
+  CHECK(layout->layer_mask == 0x07);
+  CHECK(layout->zoom_percent == 100);
+  CHECK(layout->component_count == MOTO_UI_LAYOUT_COMPONENT_COUNT);
+
+  // Every component id must appear exactly once, and the two arcs must dock to
+  // opposite sides by default so they never overlap (plan §4.3).
+  bool seen[MOTO_UI_LAYOUT_COMPONENT_COUNT + 1] = {false};
+  for (std::uint8_t i = 0; i < layout->component_count; ++i) {
+    const std::uint8_t id = layout->components[i].id;
+    CHECK(id >= 1 && id <= MOTO_UI_LAYOUT_COMPONENT_COUNT);
+    if (id >= 1 && id <= MOTO_UI_LAYOUT_COMPONENT_COUNT) {
+      CHECK(!seen[id]);
+      seen[id] = true;
+    }
+  }
+  const moto_ui_component_layout_t& progress =
+      layout->components[MOTO_UI_COMPONENT_PROGRESS_ARC - 1];
+  const moto_ui_component_layout_t& speed_arc =
+      layout->components[MOTO_UI_COMPONENT_SPEED_ARC - 1];
+  CHECK(progress.anchor == MOTO_UI_ARC_TOP);
+  CHECK(progress.span_deg == 120);
+  CHECK(speed_arc.anchor == MOTO_UI_ARC_BOTTOM);
+  CHECK(speed_arc.span_deg == 120);
+  CHECK(progress.enabled == 1 && speed_arc.enabled == 1);
+  // heading is off by default (plan §4.2); the rest are on.
+  CHECK(layout->components[MOTO_UI_COMPONENT_HEADING - 1].enabled == 0);
+  CHECK(layout->components[MOTO_UI_COMPONENT_SPEED - 1].enabled == 1);
+  CHECK(layout->components[MOTO_UI_COMPONENT_SPEED_LIMIT - 1].enabled == 1);
+  CHECK(layout->components[MOTO_UI_COMPONENT_MANEUVER - 1].enabled == 1);
+  CHECK(layout->components[MOTO_UI_COMPONENT_REMAINING_DISTANCE - 1].enabled == 1);
+  CHECK(layout->components[MOTO_UI_COMPONENT_REMAINING_TIME - 1].enabled == 1);
+}
+
+void test_apply_layout_clamps_out_of_range_values() {
+  moto_ui_layout_t layout{};
+  layout.north_up = 1;
+  layout.music_page_enabled = 1;
+  // Every field deliberately out of range.
+  layout.map_height_px = 900;      // above MAX_MAP_HEIGHT
+  layout.map_opacity = 200;        // above 100
+  layout.zoom_percent = 999;       // above 200
+  layout.route_width_px = 99;      // above 16
+  layout.street_width_px = 99;     // above 12
+  layout.component_count = MOTO_UI_LAYOUT_COMPONENT_COUNT + 4;
+  layout.components[0] = {MOTO_UI_COMPONENT_SPEED, 1, 9, 250, -500, -500, 7, 45};
+  layout.components[1] = {MOTO_UI_COMPONENT_PROGRESS_ARC, 1, 9, 0,
+                          0, 0, 9, 45};
+  layout.components[2] = {MOTO_UI_COMPONENT_SPEED_LIMIT, 1, 9, 5, 10, 10, 0, 0};
+  moto_nav_ui_apply_layout(&layout);
+
+  const moto_ui_layout_t* applied = moto_nav_ui_current_layout();
+  CHECK(applied != nullptr);
+  if (applied == nullptr) return;
+  // map_height clamps to the documented range and is forced even.
+  CHECK(applied->map_height_px == MOTO_UI_LAYOUT_MAX_MAP_HEIGHT);
+  CHECK((applied->map_height_px & 1U) == 0U);
+  CHECK(applied->map_opacity == 100);
+  CHECK(applied->zoom_percent == 200);
+  CHECK(applied->component_count == MOTO_UI_LAYOUT_COMPONENT_COUNT);
+  const moto_ui_component_layout_t& speed = applied->components[0];
+  CHECK(speed.size == MOTO_UI_SIZE_M);
+  CHECK(speed.opacity == 100);        // 250 clamps down to the 100% ceiling
+  const moto_ui_component_layout_t& arc = applied->components[1];
+  CHECK(arc.anchor == MOTO_UI_ARC_TOP);
+  CHECK(arc.span_deg == 120);          // unknown span normalises to 120
+  const moto_ui_component_layout_t& limit = applied->components[2];
+  CHECK(limit.opacity == 10);          // 5 clamps up to the floor
+  CHECK(limit.size == MOTO_UI_SIZE_M);
+}
+
+void test_apply_layout_is_reversible_and_idempotent() {
+  moto_nav_ui_set_page(MOTO_UI_PAGE_NAVIGATION);
+  moto_ui_state_t state = base_state();
+  fill_route(state, 12);
+  fill_streets(state);
+
+  // A layout with the map hidden and only the speed component enabled.
+  moto_ui_layout_t layout{};
+  layout.north_up = 0;                 // heading-up
+  layout.music_page_enabled = 1;
+  layout.map_visible = 0;
+  layout.theme_id = 0;
+  layout.map_height_px = 300;
+  layout.map_opacity = 40;
+  layout.route_r = 0x12; layout.route_g = 0x34; layout.route_b = 0x56;
+  layout.route_width_px = 9;
+  layout.route_opacity = 55;
+  layout.street_r = 0x11; layout.street_g = 0x22; layout.street_b = 0x33;
+  layout.street_width_px = 5;
+  layout.street_opacity = 20;
+  layout.building_opacity = 60;
+  layout.layer_mask = 0x05;            // roads + route, no buildings
+  layout.zoom_percent = 150;
+  layout.component_count = 2;
+  layout.components[0] = {MOTO_UI_COMPONENT_SPEED, 1, MOTO_UI_SIZE_L, 100,
+                          100, 100, 0, 0};
+  layout.components[1] = {MOTO_UI_COMPONENT_SPEED_ARC, 1, MOTO_UI_SIZE_S, 50,
+                          0, 0, MOTO_UI_ARC_LEFT, 180};
+  moto_nav_ui_apply_layout(&layout);
+  moto_nav_ui_set_state(&state);
+  const Frame custom = capture();
+
+  // Applying the very same layout again must not move a single pixel.
+  moto_nav_ui_apply_layout(&layout);
+  moto_nav_ui_set_state(&state);
+  const Frame repeated = capture();
+  CHECK(custom.hash == repeated.hash);
+
+  // A different layout must visibly change the frame (the map is hidden here).
+  moto_ui_layout_t restored = layout;
+  restored.map_visible = 1;
+  restored.map_height_px = MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT;
+  moto_nav_ui_apply_layout(&restored);
+  moto_nav_ui_set_state(&state);
+  const Frame with_map = capture();
+  CHECK(with_map.hash != custom.hash);
+
+  // Heading-up keeps the marker unrotated; north-up rotates it, so the two
+  // orientations must render differently with the same geometry.
+  moto_ui_layout_t north_up = restored;
+  north_up.north_up = 1;
+  moto_nav_ui_apply_layout(&north_up);
+  moto_nav_ui_set_state(&state);
+  const Frame north_frame = capture();
+  moto_ui_layout_t heading_up = restored;
+  heading_up.north_up = 0;
+  moto_nav_ui_apply_layout(&heading_up);
+  moto_nav_ui_set_state(&state);
+  const Frame heading_frame = capture();
+  CHECK(north_frame.hash != heading_frame.hash);
+
+  // A null layout must be ignored, and an all-zero layout (zero components,
+  // zero map height) must clamp instead of corrupting the view.
+  moto_nav_ui_apply_layout(nullptr);
+  const moto_ui_layout_t* unchanged = moto_nav_ui_current_layout();
+  CHECK(unchanged != nullptr);
+  if (unchanged != nullptr) {
+    CHECK(unchanged->north_up == heading_up.north_up);
+  }
+  moto_ui_layout_t fallback{};
+  fallback.component_count = MOTO_UI_LAYOUT_COMPONENT_COUNT;
+  moto_nav_ui_apply_layout(&fallback);
+  moto_nav_ui_set_state(&state);
+  const Frame fallback_frame = capture();
+  const moto_ui_layout_t* current = moto_nav_ui_current_layout();
+  CHECK(current != nullptr);
+  if (current != nullptr) {
+    // A zero height clamps to the documented minimum, never to zero.
+    CHECK(current->map_height_px == MOTO_UI_LAYOUT_MIN_MAP_HEIGHT);
+    // The array is sized but unpopulated, so no component is addressable.
+    CHECK(current->component_count == MOTO_UI_LAYOUT_COMPONENT_COUNT);
+    for (std::uint8_t i = 0; i < current->component_count; ++i) {
+      CHECK(current->components[i].id == 0);
+    }
+  }
+  // Re-applying the same fallback must be idempotent too.
+  moto_nav_ui_apply_layout(&fallback);
+  moto_nav_ui_set_state(&state);
+  CHECK(capture().hash == fallback_frame.hash);
+
+  // Leave the music page enabled again: the effective switch is the AND of the
+  // layout flag and the media capability, and the following tests page to it.
+  moto_ui_layout_t music_on = fallback;
+  music_on.music_page_enabled = 1;
+  moto_nav_ui_apply_layout(&music_on);
+}
+
+void test_component_visibility_is_layout_and_data_gated() {
+  moto_nav_ui_set_page(MOTO_UI_PAGE_NAVIGATION);
+  // Start from the full default layout so every component is addressable.
+  moto_ui_layout_t full = *moto_nav_ui_current_layout();
+  full.component_count = MOTO_UI_LAYOUT_COMPONENT_COUNT;
+  full.components[MOTO_UI_COMPONENT_SPEED - 1] = {
+      MOTO_UI_COMPONENT_SPEED, 1, MOTO_UI_SIZE_M, 100, 185, 300, 0, 0};
+  full.components[MOTO_UI_COMPONENT_SPEED_LIMIT - 1] = {
+      MOTO_UI_COMPONENT_SPEED_LIMIT, 1, MOTO_UI_SIZE_M, 100, 300, 238, 0, 0};
+  full.components[MOTO_UI_COMPONENT_HEADING - 1] = {
+      MOTO_UI_COMPONENT_HEADING, 0, MOTO_UI_SIZE_M, 100, 24, 40, 0, 0};
+  full.components[MOTO_UI_COMPONENT_MANEUVER - 1] = {
+      MOTO_UI_COMPONENT_MANEUVER, 1, MOTO_UI_SIZE_M, 100, 29, 220, 0, 0};
+  full.components[MOTO_UI_COMPONENT_REMAINING_DISTANCE - 1] = {
+      MOTO_UI_COMPONENT_REMAINING_DISTANCE, 1, MOTO_UI_SIZE_M, 90, 150, 390, 0, 0};
+  full.components[MOTO_UI_COMPONENT_REMAINING_TIME - 1] = {
+      MOTO_UI_COMPONENT_REMAINING_TIME, 1, MOTO_UI_SIZE_M, 90, 250, 390, 0, 0};
+  full.components[MOTO_UI_COMPONENT_PROGRESS_ARC - 1] = {
+      MOTO_UI_COMPONENT_PROGRESS_ARC, 1, MOTO_UI_SIZE_M, 80, 0, 0,
+      MOTO_UI_ARC_TOP, 120};
+  full.components[MOTO_UI_COMPONENT_SPEED_ARC - 1] = {
+      MOTO_UI_COMPONENT_SPEED_ARC, 1, MOTO_UI_SIZE_M, 80, 0, 0,
+      MOTO_UI_ARC_BOTTOM, 120};
+  moto_nav_ui_apply_layout(&full);
+
+  // Guidance present: maneuver / remaining distance / time / progress arc are
+  // data-available; speed and the speed arc never depend on a route.
+  moto_ui_state_t guided = base_state();
+  fill_route(guided, 12);
+  guided.speed_limit_kph = 50;
+  moto_nav_ui_set_state(&guided);
+  const Frame with_guidance = capture();
+
+  // No guidance at all: the guidance-only components must disappear.
+  moto_ui_state_t idle = guided;
+  idle.route_point_count = 0;
+  idle.speed_limit_kph = 0;
+  idle.mode = MOTO_UI_ACQUIRING_FIX;
+  moto_nav_ui_set_state(&idle);
+  const Frame without_guidance = capture();
+  CHECK(with_guidance.hash != without_guidance.hash);
+
+  // Restoring guidance must restore the exact previous frame: no residue and
+  // nothing accumulated while the components were hidden.
+  moto_nav_ui_set_state(&guided);
+  const Frame guidance_again = capture();
+  CHECK(guidance_again.hash == with_guidance.hash);
+
+  // A layout with everything disabled must hide the speed readout too, even
+  // though speed data is always available.
+  moto_ui_layout_t layout = *moto_nav_ui_current_layout();
+  layout.component_count = 0;
+  moto_nav_ui_apply_layout(&layout);
+  moto_nav_ui_set_state(&guided);
+  const Frame all_off = capture();
+  CHECK(all_off.hash != with_guidance.hash);
+
+  // Restore the documented default layout so later tests keep the 232 px map
+  // viewport they were written against.
+  moto_ui_layout_t defaults{};
+  defaults.north_up = 1;
+  defaults.music_page_enabled = 1;
+  defaults.map_visible = 1;
+  defaults.theme_id = 0;
+  defaults.map_height_px = MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT;
+  defaults.map_opacity = 100;
+  defaults.route_r = 0xFF; defaults.route_g = 0xFF; defaults.route_b = 0xFF;
+  defaults.route_width_px = 6;
+  defaults.route_opacity = 100;
+  defaults.street_r = 0x8E; defaults.street_g = 0x8E; defaults.street_b = 0x93;
+  defaults.street_width_px = 3;
+  defaults.street_opacity = 35;
+  defaults.building_opacity = 25;
+  defaults.layer_mask = 0x07;
+  defaults.zoom_percent = 100;
+  defaults.component_count = MOTO_UI_LAYOUT_COMPONENT_COUNT;
+  moto_nav_ui_apply_layout(&defaults);
+  moto_nav_ui_set_state(&guided);
+  capture();
+}
+
 void test_music_page_state_and_fallback() {
   moto_nav_ui_set_music_page_enabled(1);
   moto_nav_ui_set_page(MOTO_UI_PAGE_MUSIC);
@@ -440,6 +715,10 @@ int main(int argc, char **argv) {
 
   test_frames_are_deterministic();
   test_clearing_geometry_leaves_no_residue();
+  test_layout_defaults_match_the_documented_baseline();
+  test_apply_layout_clamps_out_of_range_values();
+  test_apply_layout_is_reversible_and_idempotent();
+  test_component_visibility_is_layout_and_data_gated();
   test_music_page_state_and_fallback();
   test_phone_lifecycle_renders_deterministically();
   test_demo_mode_visual_contract();

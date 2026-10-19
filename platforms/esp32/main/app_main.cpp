@@ -101,6 +101,10 @@ void power_button_task(void*) {
 }
 } // namespace
 
+extern "C" void navui_trace(const char *message) {
+    ESP_LOGI("navui", "%s", message);
+}
+
 extern "C" void app_main(void) {
   static_assert(MOTO_DISPLAY_WIDTH == MOTO_UI_CANVAS_WIDTH &&
                     MOTO_DISPLAY_HEIGHT == MOTO_UI_CANVAS_HEIGHT,
@@ -177,6 +181,9 @@ extern "C" void app_main(void) {
   presenter.apply_to_lvgl();
   moto_nav_ui_set_music_page_enabled(0);
   phone_bridge.install_ui_callbacks();
+  // Load the persisted navigation layout (or the default) before the renderer
+  // task starts: the first rendered frame already shows the rider's arrangement.
+  phone_bridge.restore_layout();
   board_port_unlock();
 
   if (!phone_bridge.start_renderer()) {

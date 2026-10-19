@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "moto_nav_ui.h"
+#include "ui_layout_store.h"
 
 namespace {
 constexpr char kTag[] = "phone_nav";
@@ -21,6 +22,12 @@ constexpr double kPi = 3.14159265358979323846;
 // so a physical-device check sees both the road context and a maneuver quickly.
 constexpr double kDemoRouteStartM = 0.0;
 constexpr double kDemoSpeedMps = 12.0;
+// A phone push is accepted immediately but only applied and persisted once it
+// has been stable for this long (plan §5.6: NVS wear protection). A second
+// push inside the window simply replaces the pending layout.
+constexpr std::uint64_t kLayoutDebounceMs = 2'000;
+// Every one of the eight editable components the phone can send (plan §5.4).
+constexpr std::uint8_t kUiLayoutSupportedMask = 0xFFU;
 
 struct DemoPose {
   moto::nav::Gcj02Point point{};
@@ -275,10 +282,109 @@ std::uint64_t monotonic_ms() {
 bool has_flag(std::uint16_t flags, moto::ble::NavigationFlag flag) {
   return (flags & static_cast<std::uint16_t>(flag)) != 0U;
 }
+
+moto_ui_layout_t default_ui_layout() {
+  moto_ui_layout_t layout{};
+  layout.north_up = 1;
+  layout.music_page_enabled = 1;
+  layout.map_visible = 1;
+  layout.theme_id = static_cast<std::uint8_t>(moto::ble::UiThemeId::Dark);
+  layout.map_height_px = MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT;
+  layout.map_opacity = 100;
+  layout.route_r = 0xFF;
+  layout.route_g = 0xFF;
+  layout.route_b = 0xFF;
+  layout.route_width_px = 6;
+  layout.route_opacity = 100;
+  layout.street_r = 0x8E;
+  layout.street_g = 0x8E;
+  layout.street_b = 0x93;
+  layout.street_width_px = 3;
+  layout.street_opacity = 35;
+  layout.building_opacity = 25;
+  layout.layer_mask = moto::ble::UiLayerRoads | moto::ble::UiLayerBuildings |
+                      moto::ble::UiLayerRoute;
+  layout.zoom_percent = 100;
+  layout.component_count = MOTO_UI_LAYOUT_COMPONENT_COUNT;
+
+  // §4.10 default coordinates. These are placeholder values tuned on real
+  // hardware later; they must stay byte-identical to Android LayoutDefaults so
+  // the phone preview and the device agree without any negotiation.
+  layout.components[0] = {MOTO_UI_COMPONENT_SPEED, 1, MOTO_UI_SIZE_M, 100,
+                          185, 300, 0, 0};
+  layout.components[1] = {MOTO_UI_COMPONENT_SPEED_LIMIT, 1, MOTO_UI_SIZE_M,
+                          100, 300, 238, 0, 0};
+  layout.components[2] = {MOTO_UI_COMPONENT_HEADING, 0, MOTO_UI_SIZE_M, 100,
+                          24, 40, 0, 0};
+  layout.components[3] = {MOTO_UI_COMPONENT_MANEUVER, 1, MOTO_UI_SIZE_M, 100,
+                          29, 220, 0, 0};
+  layout.components[4] = {MOTO_UI_COMPONENT_REMAINING_DISTANCE, 1,
+                          MOTO_UI_SIZE_M, 90, 150, 390, 0, 0};
+  layout.components[5] = {MOTO_UI_COMPONENT_REMAINING_TIME, 1, MOTO_UI_SIZE_M,
+                          90, 250, 390, 0, 0};
+  layout.components[6] = {MOTO_UI_COMPONENT_PROGRESS_ARC, 1, MOTO_UI_SIZE_M, 80,
+                          0, 0, MOTO_UI_ARC_TOP, 120};
+  layout.components[7] = {MOTO_UI_COMPONENT_SPEED_ARC, 1, MOTO_UI_SIZE_M, 80,
+                          0, 0, MOTO_UI_ARC_BOTTOM, 120};
+  return layout;
+}
+
+// Phone layout -> renderer layout. The decoder already validated every field,
+// so this only transcribes. The renderer's own clamp pass (§6.2) stays as the
+// last line of defence for a phone from a newer protocol revision.
+moto_ui_layout_t to_renderer_layout(const moto::ble::UiLayout& input) {
+  moto_ui_layout_t layout = default_ui_layout();
+  layout.north_up =
+      (input.flags & moto::ble::UiLayoutNorthUp) != 0U ? 1U : 0U;
+  layout.music_page_enabled =
+      (input.flags & moto::ble::UiLayoutMusicPageEnabled) != 0U ? 1U : 0U;
+  layout.map_visible =
+      (input.flags & moto::ble::UiLayoutMapVisible) != 0U ? 1U : 0U;
+  layout.theme_id = input.theme;
+  layout.map_height_px = input.map_height_px;
+  layout.map_opacity = input.map_opacity;
+  layout.route_r = input.route_r;
+  layout.route_g = input.route_g;
+  layout.route_b = input.route_b;
+  layout.route_width_px = input.route_width_px;
+  layout.route_opacity = input.route_opacity;
+  layout.street_r = input.street_r;
+  layout.street_g = input.street_g;
+  layout.street_b = input.street_b;
+  layout.street_width_px = input.street_width_px;
+  layout.street_opacity = input.street_opacity;
+  layout.building_opacity = input.building_opacity;
+  layout.layer_mask = input.layer_mask;
+  layout.zoom_percent = input.zoom_percent;
+  layout.component_count = static_cast<std::uint8_t>(
+      std::min<std::size_t>(input.components.size(),
+                            MOTO_UI_LAYOUT_COMPONENT_COUNT));
+  for (std::size_t index = 0; index < layout.component_count; ++index) {
+    const moto::ble::UiLayoutComponent& source = input.components[index];
+    moto_ui_component_layout_t& target = layout.components[index];
+    target.id = source.id;
+    target.enabled = (source.flags & moto::ble::UiComponentEnabled) != 0U
+                         ? 1U
+                         : 0U;
+    target.size = source.size;
+    target.opacity = source.opacity;
+    target.x = source.x;
+    target.y = source.y;
+    target.anchor = source.anchor;
+    target.span_deg = source.span_deg;
+  }
+  return layout;
+}
 }  // namespace
 
 PhoneNavBridge::PhoneNavBridge(moto::nav::NavPresenter& presenter)
-    : presenter_(presenter) {}
+    : presenter_(presenter) {
+  // Restoring the persisted layout here keeps the default in place for every
+  // caller that constructs the bridge before the shared UI exists. The render
+  // path re-applies render_layout_ once the objects are created, so the NVS
+  // value survives a boot where the phone never connects.
+  restore_layout();
+}
 
 void PhoneNavBridge::set_sender(SendCallback callback,
                                 void* context) noexcept {
@@ -498,6 +604,156 @@ void PhoneNavBridge::set_demo_active(bool active) {
   present_navigation();
 }
 
+void PhoneNavBridge::restore_layout() {
+  moto_ui_layout_t layout{};
+  std::uint16_t revision = 0;
+  const bool restored = moto_ui_layout_store::load(&layout, &revision);
+  if (!restored) {
+    layout = default_layout();
+    revision = 0;
+  }
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    render_layout_ = layout;
+    applied_layout_revision_ = revision;
+    layout_nvs_saved_ = restored;
+    pending_layout_ = {};
+    layout_dirty_ = false;
+    layout_dirty_since_ms_ = 0;
+  }
+  // The projection follows the restored map height/zoom; the render task picks
+  // it up on its next frame. Before the UI exists, moto_nav_ui_apply_layout
+  // only retains the layout (§6.2), so calling it here is always safe.
+  apply_layout_locked(render_layout_);
+  ESP_LOGI(kTag, "layout restored: %s revision=%u nvs_saved=%d",
+           restored ? "nvs" : "default",
+           static_cast<unsigned>(applied_layout_revision_),
+           layout_nvs_saved_ ? 1 : 0);
+}
+
+void PhoneNavBridge::apply_layout_locked(const moto_ui_layout_t& layout) {
+  // The map viewport height and zoom feed the projection (§6.3); the marker
+  // rotation mode comes from north_up inside the layout itself.
+  presenter_.set_view_config(layout.north_up != 0,
+                             static_cast<int>(layout.map_height_px),
+                             static_cast<int>(layout.zoom_percent));
+  moto_nav_ui_apply_layout(&layout);
+}
+
+void PhoneNavBridge::apply_pending_layout() {
+  moto::ble::UiLayout pending{};
+  std::uint64_t dirty_since_ms = 0;
+  bool dirty = false;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    dirty = layout_dirty_;
+    dirty_since_ms = layout_dirty_since_ms_;
+    if (!dirty) {
+      return;
+    }
+    pending = pending_layout_;
+  }
+  // Nothing to do until the pushed layout has been stable for the debounce
+  // window; a newer push inside the window has already replaced the pending
+  // copy, so only the final version is ever applied and written.
+  const std::uint64_t now_ms = monotonic_ms();
+  const std::uint64_t elapsed =
+      dirty_since_ms == 0 || now_ms < dirty_since_ms
+          ? 0
+          : now_ms - dirty_since_ms;
+  if (elapsed < kLayoutDebounceMs) {
+    return;
+  }
+
+  const moto_ui_layout_t layout = to_renderer_layout(pending);
+  // Persisting is the one blocking operation in this path; it stays outside
+  // state_mutex_ so BLE decoding is never delayed by a flash write.
+  const bool persisted =
+      moto_ui_layout_store::save(&layout, pending.layout_revision);
+  if (!persisted) {
+    // Keep the layout applied (it is already on screen) but report nvs_saved
+    // as clear so the phone can retry on the next change.
+    ESP_LOGW(kTag, "layout revision %u could not be persisted",
+             static_cast<unsigned>(pending.layout_revision));
+  }
+  apply_layout_locked(layout);
+
+  bool send_state = false;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    if (layout_dirty_) {
+      // A newer push arrived while the flash write was running; leave the
+      // pending state alone and let the next frame settle it.
+      layout_dirty_ = false;
+      layout_dirty_since_ms_ = 0;
+      pending_layout_ = {};
+      render_layout_ = layout;
+      applied_layout_revision_ = pending.layout_revision;
+      layout_nvs_saved_ = persisted;
+      send_state = true;
+    }
+  }
+  if (send_state) {
+    send_ui_layout_state();
+  }
+}
+
+moto::ble::AckStatus PhoneNavBridge::consume_ui_layout(
+    const moto::ble::UiLayout& input) {
+  std::uint16_t applied_revision = 0;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    applied_revision = applied_layout_revision_;
+  }
+  // The phone's revision is monotonic, so a retransmission or a stale push is
+  // answered without touching flash or the renderer (§5.6). A rollback to an
+  // older revision is ignored as well: the device never undoes a newer layout
+  // on its own (§6.5).
+  if (input.layout_revision == 0 ||
+      input.layout_revision == applied_revision) {
+    return moto::ble::AckStatus::Duplicate;
+  }
+  if (input.layout_revision < applied_revision) {
+    return moto::ble::AckStatus::Duplicate;
+  }
+
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    pending_layout_ = input;
+    if (!layout_dirty_) {
+      layout_dirty_since_ms_ = monotonic_ms();
+    }
+    layout_dirty_ = true;
+  }
+  ESP_LOGI(kTag, "ui layout revision %u accepted",
+           static_cast<unsigned>(input.layout_revision));
+  return moto::ble::AckStatus::Ok;
+}
+
+void PhoneNavBridge::send_ui_layout_state() {
+  moto::ble::UiLayoutState state{};
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    state.layout_revision = applied_layout_revision_;
+    state.supported_mask = kUiLayoutSupportedMask;
+    state.flags = layout_nvs_saved_ ? moto::ble::UiLayoutNvsSaved : 0U;
+  }
+  const moto::ble::Message message{state};
+  // Sending can block briefly and can cause NimBLE callbacks; never keep
+  // state_mutex_ held across this boundary.
+  SendCallback sender = nullptr;
+  void* sender_context = nullptr;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    if (sender_ == nullptr || !link_active_) {
+      return;
+    }
+    sender = sender_;
+    sender_context = sender_context_;
+  }
+  sender(message, moto::ble::Urgent, sender_context);
+}
+
 moto::ble::AckStatus PhoneNavBridge::on_message(
     const moto::ble::ReassembledMessage& message) {
   const auto decoded = moto::ble::decode_message(
@@ -545,6 +801,13 @@ moto::ble::AckStatus PhoneNavBridge::on_message(
             }
           }
           present_navigation();
+          if (value.state == moto::ble::ConnectionState::Ready) {
+            // Handshake complete: report the layout in effect so the phone can
+            // decide whether it still needs to push one (§5.4). Only the Ready
+            // transition emits it, so a repeated status does not spam the
+            // display-data queue.
+            send_ui_layout_state();
+          }
         } else if constexpr (std::is_same_v<T, moto::ble::Heartbeat>) {
           std::uint32_t phone_session_id = 0;
           {
@@ -566,6 +829,8 @@ moto::ble::AckStatus PhoneNavBridge::on_message(
           consume_media(value);
         } else if constexpr (std::is_same_v<T, moto::ble::MapScene>) {
           return consume_map_scene(value);
+        } else if constexpr (std::is_same_v<T, moto::ble::UiLayout>) {
+          return consume_ui_layout(value);
         } else if constexpr (std::is_same_v<T, moto::ble::Ack>) {
           ESP_LOGD(kTag, "phone ack sequence=%u command=%u status=%u",
                    value.acknowledged_sequence, value.command_id,
@@ -976,7 +1241,14 @@ void PhoneNavBridge::render_pending() {
     // arrives through moto_nav_ui_apply_layout() and both are ANDed inside.
     moto_nav_ui_set_music_page_enabled(
         render_media_music_available_ ? 1U : 0U);
+    // Re-apply the retained layout so a layout pushed before the objects
+    // existed, or a recreated page, still shows the phone's arrangement.
+    moto_nav_ui_apply_layout(&render_layout_);
     presenter_.apply_to_lvgl();
+    // Layout bookkeeping runs on the same 40 Hz path as the display, never on
+    // the BLE worker: a push is applied and persisted one frame after it
+    // settles, and the resulting UiLayoutState is emitted from here too.
+    apply_pending_layout();
   } else if (motion) {
     moto_nav_ui_set_motion_state(&presenter_.ui_state());
   }
@@ -1019,6 +1291,16 @@ void PhoneNavBridge::page_changed(moto_ui_page_t page, void* context) {
   }
   self->present_navigation();
   self->send_page_command(page);
+}
+
+moto_ui_layout_t PhoneNavBridge::default_layout() {
+  return default_ui_layout();
+}
+
+void PhoneNavBridge::store_layout_to_renderer(const moto_ui_layout_t& layout) {
+  // Retained so a later frame can re-apply the exact same layout after the UI
+  // is created (plan §6.5: read NVS before the UI exists if necessary).
+  moto_nav_ui_apply_layout(&layout);
 }
 
 void PhoneNavBridge::music_command(moto_music_command_t command,
