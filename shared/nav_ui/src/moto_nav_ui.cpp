@@ -244,7 +244,8 @@ lv_color_t traffic_color(moto_traffic_t traffic) {
 }
 
 const char *cardinal_name(std::uint16_t heading) {
-    static const char *names[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+    static const char *names[] = {"北", "东北", "东", "东南",
+                                  "南", "西南", "西", "西北"};
     return names[((heading + 22U) / 45U) % 8U];
 }
 
@@ -1474,7 +1475,7 @@ void update_compass(const moto_ui_state_t *state) {
     }
 
     static const double bearings[4] = {0.0, 90.0, 180.0, 270.0};
-    static const char *letters[4] = {"N", "E", "S", "W"};
+    static const char *letters[4] = {"北", "东", "南", "西"};
     for(int i = 0; i < 4; ++i) {
         const double angle = bearings[i] * kPi / 180.0 - heading_rad;
         const int x = static_cast<int>(px(180.0) + std::sin(angle) * px(112.0));
@@ -1744,7 +1745,7 @@ void create_compass_page() {
         lv_obj_set_style_line_color(ui.compass_ticks[i], kQuiet, 0);
     }
     for(int i = 0; i < 4; ++i) {
-        ui.compass_letters[i] = make_label(page, &lv_font_montserrat_16, kQuiet, "N");
+        ui.compass_letters[i] = make_label(page, &moto_font_nav_16, kQuiet, "北");
         lv_obj_set_size(ui.compass_letters[i], px(28), px(22));
         lv_obj_set_style_text_align(ui.compass_letters[i], LV_TEXT_ALIGN_CENTER, 0);
     }
@@ -1758,7 +1759,7 @@ void create_compass_page() {
 
     ui.compass_heading = make_label(page, &lv_font_montserrat_48, kAmber, "359°");
     lv_obj_align(ui.compass_heading, LV_ALIGN_CENTER, 0, px(-37));
-    ui.compass_cardinal = make_label(page, &lv_font_montserrat_20, kAmber, "N");
+    ui.compass_cardinal = make_label(page, &moto_font_nav_20, kAmber, "北");
     lv_obj_align(ui.compass_cardinal, LV_ALIGN_CENTER, 0, px(10));
     ui.compass_speed = make_label(page, &lv_font_montserrat_20, kWhite, "72 km/h");
     lv_obj_set_style_text_letter_space(ui.compass_speed, px(1), 0);
