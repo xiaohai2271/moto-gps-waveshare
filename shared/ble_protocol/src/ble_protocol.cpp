@@ -17,6 +17,15 @@ constexpr std::size_t kMaxMediaSourceBytes = 31;
 constexpr std::size_t kMaxTrackTitleBytes = 63;
 constexpr std::size_t kMaxArtistNameBytes = 47;
 constexpr std::int64_t kMaxMapSceneCoordinateDeltaE6 = 100'000;
+// §5.3 (u16 revision) documents map_height_px as u16 little-endian with the
+// valid even range 160..466, matching the 466 px device canvas.
+constexpr std::uint16_t kMinUiMapHeightPx = 160;
+constexpr std::uint16_t kMaxUiMapHeightPx = 466;
+constexpr std::uint8_t kMinUiZoomPercent = 50;
+constexpr std::uint8_t kMaxUiZoomPercent = 200;
+constexpr std::uint8_t kMaxUiRouteWidthPx = 16;
+constexpr std::uint8_t kMaxUiStreetWidthPx = 12;
+constexpr std::uint8_t kMaxUiOpacity = 100;
 
 class Writer {
  public:
@@ -25,6 +34,10 @@ class Writer {
   void u16(std::uint16_t value) {
     u8(static_cast<std::uint8_t>(value & 0xFFU));
     u8(static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
+  }
+
+  void s16(std::int16_t value) {
+    u16(static_cast<std::uint16_t>(value));
   }
 
   void u24(std::uint32_t value) {
@@ -95,6 +108,8 @@ class Reader {
     const std::uint16_t high = u8();
     return static_cast<std::uint16_t>(low | (high << 8U));
   }
+
+  std::int16_t s16() { return static_cast<std::int16_t>(u16()); }
 
   std::uint32_t u24() {
     const std::uint32_t low = u8();
@@ -247,6 +262,52 @@ bool valid_map_road_class(MapRoadClass road_class) {
 
 bool valid_map_building_class(MapBuildingClass building_class) {
   return enum_at_most(building_class, MapBuildingClass::Parking);
+}
+
+bool valid_ui_component_id(std::uint8_t id) {
+  return id >= static_cast<std::uint8_t>(UiComponentId::Speed) &&
+         id <= static_cast<std::uint8_t>(UiComponentId::SpeedArc);
+}
+
+bool valid_ui_arc_span(std::uint8_t span_deg) {
+  return span_deg == 90 || span_deg == 120 || span_deg == 180;
+}
+
+Error validate_ui_component(const UiLayoutComponent& value) {
+  if (!valid_ui_component_id(value.id)) {
+    return Error::InvalidEnum;
+  }
+  if ((value.flags & ~kKnownUiComponentFlags) != 0U) {
+    return Error::OutOfRange;
+  }
+  if (value.size > static_cast<std::uint8_t>(UiComponentSize::Large)) {
+    return Error::InvalidEnum;
+  }
+  if (value.opacity > kMaxUiOpacity) {
+    return Error::OutOfRange;
+  }
+  if (ui_component_is_arc(value.id)) {
+    // Arc components park on an edge instead of carrying a free position.
+    if (value.x != 0 || value.y != 0) {
+      return Error::OutOfRange;
+    }
+    if (value.anchor > static_cast<std::uint8_t>(UiArcAnchor::Left)) {
+      return Error::InvalidEnum;
+    }
+    if (!valid_ui_arc_span(value.span_deg)) {
+      return Error::InvalidEnum;
+    }
+  } else {
+    if (value.anchor != 0 || value.span_deg != 0) {
+      return Error::OutOfRange;
+    }
+    if (value.x < 0 || value.y < 0 ||
+        value.x >= static_cast<std::int16_t>(kUiLayoutCanvasPx) ||
+        value.y >= static_cast<std::int16_t>(kUiLayoutCanvasPx)) {
+      return Error::OutOfRange;
+    }
+  }
+  return Error::None;
 }
 
 bool valid_command_kind(DeviceCommandKind kind) {
@@ -481,6 +542,67 @@ Error validate(const DeviceCommand& value) {
   return value.command_id == 0 ? Error::OutOfRange : Error::None;
 }
 
+Error validate(const UiLayout& value) {
+  if ((value.flags & ~kKnownUiLayoutFlags) != 0U ||
+      (value.layer_mask & ~kKnownUiLayerFlags) != 0U) {
+    return Error::OutOfRange;
+  }
+  if (value.theme > static_cast<std::uint8_t>(UiThemeId::Custom)) {
+    return Error::InvalidEnum;
+  }
+  if (value.map_height_px < kMinUiMapHeightPx ||
+      value.map_height_px > kMaxUiMapHeightPx ||
+      (value.map_height_px & 1U) != 0U) {
+    return Error::OutOfRange;
+  }
+  if (value.map_opacity > kMaxUiOpacity ||
+      value.route_opacity > kMaxUiOpacity ||
+      value.street_opacity > kMaxUiOpacity ||
+      value.building_opacity > kMaxUiOpacity) {
+    return Error::OutOfRange;
+  }
+  if (value.route_width_px == 0 ||
+      value.route_width_px > kMaxUiRouteWidthPx) {
+    return Error::OutOfRange;
+  }
+  if (value.street_width_px == 0 ||
+      value.street_width_px > kMaxUiStreetWidthPx) {
+    return Error::OutOfRange;
+  }
+  if (value.zoom_percent < kMinUiZoomPercent ||
+      value.zoom_percent > kMaxUiZoomPercent) {
+    return Error::OutOfRange;
+  }
+  if (value.components.size() > kMaxUiLayoutComponents) {
+    return Error::TooManyItems;
+  }
+  std::uint16_t seen_ids = 0;
+  for (const UiLayoutComponent& component : value.components) {
+    const Error component_error = validate_ui_component(component);
+    if (component_error != Error::None) {
+      return component_error;
+    }
+    const std::uint16_t bit =
+        static_cast<std::uint16_t>(1U << (component.id - 1U));
+    if ((seen_ids & bit) != 0U) {
+      return Error::InvalidArgument;
+    }
+    seen_ids = static_cast<std::uint16_t>(seen_ids | bit);
+  }
+  return Error::None;
+}
+
+Error validate(const UiLayoutState& value) {
+  if (value.source > static_cast<std::uint8_t>(UiLayoutSource::Phone)) {
+    return Error::InvalidEnum;
+  }
+  if ((value.flags & ~kKnownUiLayoutStateFlags) != 0U ||
+      value.reserved != 0) {
+    return Error::OutOfRange;
+  }
+  return Error::None;
+}
+
 template <typename T>
 BytesResult encode_payload(const T& value) {
   const Error validation = validate(value);
@@ -614,6 +736,42 @@ BytesResult encode_payload(const T& value) {
     writer.u16(value.x);
     writer.u16(value.y);
     writer.u32(value.event_time_ms);
+  } else if constexpr (std::is_same_v<T, UiLayout>) {
+    writer.u16(value.layout_revision);
+    writer.u8(value.flags);
+    writer.u8(value.theme);
+    writer.u16(value.map_height_px);
+    writer.u8(value.map_opacity);
+    writer.u8(value.route_r);
+    writer.u8(value.route_g);
+    writer.u8(value.route_b);
+    writer.u8(value.route_width_px);
+    writer.u8(value.route_opacity);
+    writer.u8(value.street_r);
+    writer.u8(value.street_g);
+    writer.u8(value.street_b);
+    writer.u8(value.street_width_px);
+    writer.u8(value.street_opacity);
+    writer.u8(value.building_opacity);
+    writer.u8(value.layer_mask);
+    writer.u8(value.zoom_percent);
+    writer.u8(static_cast<std::uint8_t>(value.components.size()));
+    for (const UiLayoutComponent& component : value.components) {
+      writer.u8(component.id);
+      writer.u8(component.flags);
+      writer.u8(component.size);
+      writer.u8(component.opacity);
+      writer.s16(component.x);
+      writer.s16(component.y);
+      writer.u8(component.anchor);
+      writer.u8(component.span_deg);
+    }
+  } else if constexpr (std::is_same_v<T, UiLayoutState>) {
+    writer.u16(value.layout_revision);
+    writer.u8(value.source);
+    writer.u8(value.supported_mask);
+    writer.u8(value.flags);
+    writer.u16(value.reserved);
   }
   return {writer.take(), Error::None, 0};
 }
@@ -899,6 +1057,69 @@ MessageResult decode_device_command(ByteView payload) {
     value.x = reader.u16();
     value.y = reader.u16();
     value.event_time_ms = reader.u32();
+    reader.require_end();
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_ui_layout(ByteView payload) {
+  Reader reader(payload);
+  UiLayout value;
+  if (begin_payload(reader)) {
+    value.layout_revision = reader.u16();
+    value.flags = reader.u8();
+    value.theme = reader.u8();
+    value.map_height_px = reader.u16();
+    value.map_opacity = reader.u8();
+    value.route_r = reader.u8();
+    value.route_g = reader.u8();
+    value.route_b = reader.u8();
+    value.route_width_px = reader.u8();
+    value.route_opacity = reader.u8();
+    value.street_r = reader.u8();
+    value.street_g = reader.u8();
+    value.street_b = reader.u8();
+    value.street_width_px = reader.u8();
+    value.street_opacity = reader.u8();
+    value.building_opacity = reader.u8();
+    value.layer_mask = reader.u8();
+    value.zoom_percent = reader.u8();
+    const std::size_t component_count = reader.u8();
+    if (reader.ok() && component_count > kMaxUiLayoutComponents) {
+      reader.fail(Error::TooManyItems);
+    }
+    if (reader.ok()) {
+      value.components.reserve(component_count);
+      for (std::size_t i = 0; i < component_count; ++i) {
+        UiLayoutComponent component;
+        component.id = reader.u8();
+        component.flags = reader.u8();
+        component.size = reader.u8();
+        component.opacity = reader.u8();
+        component.x = reader.s16();
+        component.y = reader.s16();
+        component.anchor = reader.u8();
+        component.span_deg = reader.u8();
+        if (!reader.ok()) {
+          break;
+        }
+        value.components.push_back(component);
+      }
+      reader.require_end();
+    }
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_ui_layout_state(ByteView payload) {
+  Reader reader(payload);
+  UiLayoutState value;
+  if (begin_payload(reader)) {
+    value.layout_revision = reader.u16();
+    value.source = reader.u8();
+    value.supported_mask = reader.u8();
+    value.flags = reader.u8();
+    value.reserved = reader.u16();
     reader.require_end();
   }
   return decoded_result(std::move(value), reader);
@@ -1454,6 +1675,34 @@ bool DeviceCommand::operator==(const DeviceCommand& rhs) const noexcept {
                   rhs.event_time_ms);
 }
 
+bool UiLayoutComponent::operator==(
+    const UiLayoutComponent& rhs) const noexcept {
+  return std::tie(id, flags, size, opacity, x, y, anchor, span_deg) ==
+         std::tie(rhs.id, rhs.flags, rhs.size, rhs.opacity, rhs.x, rhs.y,
+                  rhs.anchor, rhs.span_deg);
+}
+
+bool UiLayout::operator==(const UiLayout& rhs) const noexcept {
+  return std::tie(layout_revision, flags, theme, map_height_px, map_opacity,
+                  route_r, route_g, route_b, route_width_px, route_opacity,
+                  street_r, street_g, street_b, street_width_px,
+                  street_opacity, building_opacity, layer_mask, zoom_percent,
+                  components) ==
+         std::tie(rhs.layout_revision, rhs.flags, rhs.theme,
+                  rhs.map_height_px, rhs.map_opacity, rhs.route_r,
+                  rhs.route_g, rhs.route_b, rhs.route_width_px,
+                  rhs.route_opacity, rhs.street_r, rhs.street_g, rhs.street_b,
+                  rhs.street_width_px, rhs.street_opacity,
+                  rhs.building_opacity, rhs.layer_mask, rhs.zoom_percent,
+                  rhs.components);
+}
+
+bool UiLayoutState::operator==(const UiLayoutState& rhs) const noexcept {
+  return std::tie(layout_revision, source, supported_mask, flags, reserved) ==
+         std::tie(rhs.layout_revision, rhs.source, rhs.supported_mask,
+                  rhs.flags, rhs.reserved);
+}
+
 MessageType message_type(const Message& message) noexcept {
   return std::visit(
       [](const auto& value) {
@@ -1474,6 +1723,10 @@ MessageType message_type(const Message& message) noexcept {
           return MessageType::MediaState;
         } else if constexpr (std::is_same_v<T, MapScene>) {
           return MessageType::MapScene;
+        } else if constexpr (std::is_same_v<T, UiLayout>) {
+          return MessageType::UiLayout;
+        } else if constexpr (std::is_same_v<T, UiLayoutState>) {
+          return MessageType::UiLayoutState;
         } else {
           return MessageType::DeviceCommand;
         }
@@ -1500,6 +1753,9 @@ MessageResult decode_message(MessageType type, ByteView payload) {
       return decode_traffic_deviation(payload);
     case MessageType::MediaState: return decode_media_state(payload);
     case MessageType::MapScene: return decode_map_scene(payload);
+    case MessageType::UiLayout: return decode_ui_layout(payload);
+    case MessageType::UiLayoutState:
+      return decode_ui_layout_state(payload);
     case MessageType::DeviceCommand:
       return decode_device_command(payload);
   }

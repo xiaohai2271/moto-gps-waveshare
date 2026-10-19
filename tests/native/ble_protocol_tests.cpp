@@ -201,6 +201,55 @@ DeviceCommand command_fixture() {
   return value;
 }
 
+UiLayout ui_layout_fixture() {
+  UiLayout value;
+  value.layout_revision = 12;
+  value.flags = UiLayoutNorthUp | UiLayoutMusicPageEnabled |
+                UiLayoutMapVisible;
+  value.theme = static_cast<std::uint8_t>(UiThemeId::Dark);
+  value.map_height_px = 232;
+  value.map_opacity = 100;
+  value.route_r = 255;
+  value.route_g = 255;
+  value.route_b = 255;
+  value.route_width_px = 6;
+  value.route_opacity = 100;
+  value.street_r = 0x8E;
+  value.street_g = 0x8E;
+  value.street_b = 0x93;
+  value.street_width_px = 3;
+  value.street_opacity = 35;
+  value.building_opacity = 25;
+  value.layer_mask = UiLayerRoads | UiLayerBuildings | UiLayerRoute;
+  value.zoom_percent = 100;
+  value.components = {
+      {1, static_cast<std::uint8_t>(UiComponentEnabled), 1, 100, 185, 300, 0,
+       0},
+      {2, static_cast<std::uint8_t>(UiComponentEnabled), 1, 100, 300, 238, 0,
+       0},
+      {3, 0, 1, 100, 24, 40, 0, 0},
+      {4, static_cast<std::uint8_t>(UiComponentEnabled), 1, 100, 29, 220, 0,
+       0},
+      {5, static_cast<std::uint8_t>(UiComponentEnabled), 1, 90, 150, 390, 0,
+       0},
+      {6, static_cast<std::uint8_t>(UiComponentEnabled), 1, 90, 250, 390, 0,
+       0},
+      {7, static_cast<std::uint8_t>(UiComponentEnabled), 1, 80, 0, 0, 0, 120},
+      {8, static_cast<std::uint8_t>(UiComponentEnabled), 1, 80, 0, 0, 2, 120},
+  };
+  return value;
+}
+
+UiLayoutState ui_layout_state_fixture() {
+  UiLayoutState value;
+  value.layout_revision = 12;
+  value.source = static_cast<std::uint8_t>(UiLayoutSource::Phone);
+  value.supported_mask = 0xFFU;
+  value.flags = UiLayoutNvsSaved;
+  value.reserved = 0;
+  return value;
+}
+
 std::string hex(ByteView bytes) {
   std::ostringstream output;
   output << std::hex << std::setfill('0');
@@ -262,6 +311,9 @@ void dump_golden() {
   const Bytes navigation = encode_or_fail(Message{navigation_fixture()});
   const Bytes geometry = encode_or_fail(Message{geometry_fixture()});
   const Bytes command = encode_or_fail(Message{command_fixture()});
+  const Bytes ui_layout = encode_or_fail(Message{ui_layout_fixture()});
+  const Bytes ui_layout_state =
+      encode_or_fail(Message{ui_layout_state_fixture()});
   std::cout << "connection.payload=" << hex(ByteView(connection)) << '\n';
   std::cout << "connection.frame="
             << frame_hex(fragment_or_fail(MessageType::ConnectionStatus, 1,
@@ -274,6 +326,17 @@ void dump_golden() {
             << frame_hex(fragment_or_fail(MessageType::DeviceCommand,
                                           0x1234U, command, 20,
                                           AckRequested | Urgent))
+            << '\n';
+  std::cout << "ui_layout.payload=" << hex(ByteView(ui_layout)) << '\n';
+  std::cout << "ui_layout.frame="
+            << frame_hex(fragment_or_fail(MessageType::UiLayout, 0x3001U,
+                                          ui_layout, 185, AckRequested))
+            << '\n';
+  std::cout << "ui_layout.frames20="
+            << frame_hex(fragment_or_fail(MessageType::UiLayout, 0x3002U,
+                                          ui_layout, 20, AckRequested))
+            << '\n';
+  std::cout << "ui_layout_state.payload=" << hex(ByteView(ui_layout_state))
             << '\n';
 }
 
@@ -324,6 +387,8 @@ void test_all_message_round_trips() {
       Message{traffic_fixture()},
       Message{media_fixture()},
       Message{map_scene_fixture()},
+      Message{ui_layout_fixture()},
+      Message{ui_layout_state_fixture()},
       Message{command_fixture()},
   };
   for (const Message& message : messages) {
@@ -347,6 +412,9 @@ void test_golden_vectors() {
   const Bytes navigation = encode_or_fail(Message{navigation_fixture()});
   const Bytes geometry = encode_or_fail(Message{geometry_fixture()});
   const Bytes command = encode_or_fail(Message{command_fixture()});
+  const Bytes ui_layout = encode_or_fail(Message{ui_layout_fixture()});
+  const Bytes ui_layout_state =
+      encode_or_fail(Message{ui_layout_state_fixture()});
 
   CHECK(expected.at("connection.payload") == hex(ByteView(connection)));
   CHECK(expected.at("connection.frame") ==
@@ -359,6 +427,15 @@ void test_golden_vectors() {
         frame_hex(fragment_or_fail(MessageType::DeviceCommand, 0x1234U,
                                    command, 20,
                                    AckRequested | Urgent)));
+  CHECK(expected.at("ui_layout.payload") == hex(ByteView(ui_layout)));
+  CHECK(expected.at("ui_layout.frame") ==
+        frame_hex(fragment_or_fail(MessageType::UiLayout, 0x3001U, ui_layout,
+                                   185, AckRequested)));
+  CHECK(expected.at("ui_layout.frames20") ==
+        frame_hex(fragment_or_fail(MessageType::UiLayout, 0x3002U, ui_layout,
+                                   20, AckRequested)));
+  CHECK(expected.at("ui_layout_state.payload") ==
+        hex(ByteView(ui_layout_state)));
 }
 
 void test_fragmentation_and_reassembly() {
@@ -574,6 +651,330 @@ void test_validation_failures() {
                          kFrameOverhead).error == Error::InvalidArgument);
 }
 
+void test_ui_layout_protocol_constants() {
+  CHECK(CapabilityUiLayout == (1U << 8U));
+  CHECK(CapabilityWifiProvisioning == (1U << 9U));
+  CHECK(static_cast<std::uint8_t>(MessageType::UiLayout) == 0x15U);
+  CHECK(static_cast<std::uint8_t>(MessageType::UiLayoutState) == 0x16U);
+  CHECK(kUiLayoutFixedSize == 22);
+  CHECK(kUiLayoutComponentSize == 10);
+  CHECK(kMaxUiLayoutComponents == 8);
+  CHECK(kUiLayoutMaxPayloadSize == 102);
+  CHECK(kUiLayoutCanvasPx == 466);
+  CHECK(ui_component_is_arc(
+      static_cast<std::uint8_t>(UiComponentId::ProgressArc)));
+  CHECK(ui_component_is_arc(
+      static_cast<std::uint8_t>(UiComponentId::SpeedArc)));
+  CHECK(!ui_component_is_arc(
+      static_cast<std::uint8_t>(UiComponentId::Speed)));
+}
+
+void check_ui_layout_round_trip(const UiLayout& layout) {
+  const BytesResult encoded = encode_message(Message{layout});
+  CHECK(encoded.ok());
+  if (!encoded.ok()) {
+    return;
+  }
+  const MessageResult decoded =
+      decode_message(MessageType::UiLayout, ByteView(encoded.value));
+  CHECK(decoded.ok());
+  if (!decoded.ok()) {
+    return;
+  }
+  CHECK(std::holds_alternative<UiLayout>(decoded.value));
+  CHECK(std::get<UiLayout>(decoded.value) == layout);
+}
+
+void test_ui_layout_round_trip_and_boundaries() {
+  const UiLayout layout = ui_layout_fixture();
+  const Bytes payload = encode_or_fail(Message{layout});
+  CHECK(payload.size() == kUiLayoutMaxPayloadSize);
+  check_ui_layout_round_trip(layout);
+
+  UiLayout empty = layout;
+  empty.components.clear();
+  const Bytes empty_payload = encode_or_fail(Message{empty});
+  CHECK(empty_payload.size() == kUiLayoutFixedSize);
+  check_ui_layout_round_trip(empty);
+
+  UiLayout lower = layout;
+  lower.layout_revision = 0;
+  lower.flags = UiLayoutNorthUp;
+  lower.theme = static_cast<std::uint8_t>(UiThemeId::Custom);
+  lower.map_height_px = 160;
+  lower.map_opacity = 0;
+  lower.route_r = 0;
+  lower.route_g = 0;
+  lower.route_b = 0;
+  lower.route_width_px = 16;
+  lower.route_opacity = 0;
+  lower.street_width_px = 12;
+  lower.street_opacity = 0;
+  lower.building_opacity = 0;
+  lower.layer_mask = 0;
+  lower.zoom_percent = 50;
+  lower.components[0].size =
+      static_cast<std::uint8_t>(UiComponentSize::Small);
+  lower.components[0].opacity = 0;
+  lower.components[0].x = 0;
+  lower.components[0].y = 0;
+  lower.components[1].size =
+      static_cast<std::uint8_t>(UiComponentSize::Large);
+  lower.components[1].opacity = 100;
+  lower.components[2].x = 465;
+  lower.components[2].y = 465;
+  lower.components[6].anchor = static_cast<std::uint8_t>(UiArcAnchor::Left);
+  lower.components[6].span_deg = 90;
+  lower.components[7].anchor = static_cast<std::uint8_t>(UiArcAnchor::Right);
+  lower.components[7].span_deg = 180;
+  check_ui_layout_round_trip(lower);
+
+  UiLayout upper = layout;
+  upper.layout_revision = 0xFFFFU;
+  upper.map_height_px = 466;
+  upper.zoom_percent = 200;
+  upper.route_width_px = 1;
+  upper.street_width_px = 1;
+  upper.components[6].anchor = static_cast<std::uint8_t>(UiArcAnchor::Bottom);
+  upper.components[6].span_deg = 180;
+  upper.components[7].anchor = static_cast<std::uint8_t>(UiArcAnchor::Top);
+  upper.components[7].span_deg = 90;
+  check_ui_layout_round_trip(upper);
+}
+
+void test_ui_layout_validation() {
+  UiLayout value = ui_layout_fixture();
+  value.components[0].id = 0;
+  CHECK(encode_message(Message{value}).error == Error::InvalidEnum);
+  value = ui_layout_fixture();
+  value.components[0].id = 9;
+  CHECK(encode_message(Message{value}).error == Error::InvalidEnum);
+  value = ui_layout_fixture();
+  value.components[1].id = 1;
+  CHECK(encode_message(Message{value}).error == Error::InvalidArgument);
+  value = ui_layout_fixture();
+  value.components[0].flags = 0x02;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.components[0].size = 3;
+  CHECK(encode_message(Message{value}).error == Error::InvalidEnum);
+  value = ui_layout_fixture();
+  value.components[0].opacity = 101;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.components[0].anchor = 1;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.components[0].span_deg = 90;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.components[0].x = -1;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.components[0].x = static_cast<std::int16_t>(kUiLayoutCanvasPx);
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.components[0].y = static_cast<std::int16_t>(kUiLayoutCanvasPx);
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.components[6].x = 1;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.components[6].y = 1;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.components[6].anchor = 4;
+  CHECK(encode_message(Message{value}).error == Error::InvalidEnum);
+  value = ui_layout_fixture();
+  value.components[6].span_deg = 100;
+  CHECK(encode_message(Message{value}).error == Error::InvalidEnum);
+  value = ui_layout_fixture();
+  value.components[7].span_deg = 0;
+  CHECK(encode_message(Message{value}).error == Error::InvalidEnum);
+  value = ui_layout_fixture();
+  value.components.push_back(
+      {1, static_cast<std::uint8_t>(UiComponentEnabled), 1, 100, 10, 10, 0,
+       0});
+  CHECK(encode_message(Message{value}).error == Error::TooManyItems);
+
+  value = ui_layout_fixture();
+  value.flags = 0x08;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.theme = 4;
+  CHECK(encode_message(Message{value}).error == Error::InvalidEnum);
+  value = ui_layout_fixture();
+  value.map_height_px = 158;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.map_height_px = 161;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.map_height_px = 468;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.map_height_px = 465;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.map_opacity = 101;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.route_width_px = 0;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.route_width_px = 17;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.route_opacity = 101;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.street_width_px = 0;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.street_width_px = 13;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.street_opacity = 101;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.building_opacity = 101;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.layer_mask = 0x08;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.zoom_percent = 49;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+  value = ui_layout_fixture();
+  value.zoom_percent = 201;
+  CHECK(encode_message(Message{value}).error == Error::OutOfRange);
+
+  UiLayoutState state = ui_layout_state_fixture();
+  state.source = 3;
+  CHECK(encode_message(Message{state}).error == Error::InvalidEnum);
+  state = ui_layout_state_fixture();
+  state.flags = 0x02;
+  CHECK(encode_message(Message{state}).error == Error::OutOfRange);
+  state = ui_layout_state_fixture();
+  state.reserved = 1;
+  CHECK(encode_message(Message{state}).error == Error::OutOfRange);
+
+  // Source 0/1 and a partial supported mask are valid.
+  state = ui_layout_state_fixture();
+  state.source = static_cast<std::uint8_t>(UiLayoutSource::Default);
+  state.supported_mask = 0x81U;
+  state.flags = 0;
+  const BytesResult encoded = encode_message(Message{state});
+  CHECK(encoded.ok());
+  if (encoded.ok()) {
+    const MessageResult decoded =
+        decode_message(MessageType::UiLayoutState, ByteView(encoded.value));
+    CHECK(decoded.ok());
+    if (decoded.ok()) {
+      CHECK(std::get<UiLayoutState>(decoded.value) == state);
+    }
+  }
+}
+
+void test_ui_layout_decode_failures() {
+  const Bytes payload = encode_or_fail(Message{ui_layout_fixture()});
+
+  Bytes trailing = payload;
+  trailing.push_back(0);
+  CHECK(decode_message(MessageType::UiLayout, ByteView(trailing)).error ==
+        Error::TrailingPayload);
+  const Bytes truncated(payload.begin(), payload.end() - 1);
+  CHECK(decode_message(MessageType::UiLayout, ByteView(truncated)).error ==
+        Error::TruncatedPayload);
+  Bytes revision = payload;
+  revision[0] = 2;
+  CHECK(decode_message(MessageType::UiLayout, ByteView(revision)).error ==
+        Error::UnsupportedPayloadRevision);
+
+  UiLayout empty = ui_layout_fixture();
+  empty.components.clear();
+  Bytes too_many = encode_or_fail(Message{empty});
+  too_many[21] = 9;
+  CHECK(decode_message(MessageType::UiLayout, ByteView(too_many)).error ==
+        Error::TooManyItems);
+
+  Bytes bad_size = payload;
+  bad_size[24] = 3;
+  CHECK(decode_message(MessageType::UiLayout, ByteView(bad_size)).error ==
+        Error::InvalidEnum);
+  Bytes bad_opacity = payload;
+  bad_opacity[25] = 101;
+  CHECK(decode_message(MessageType::UiLayout, ByteView(bad_opacity)).error ==
+        Error::OutOfRange);
+  Bytes duplicate_id = payload;
+  duplicate_id[32] = duplicate_id[22];
+  CHECK(decode_message(MessageType::UiLayout, ByteView(duplicate_id)).error ==
+        Error::InvalidArgument);
+
+  CHECK(decode_message(static_cast<MessageType>(0xFF),
+                       ByteView(payload)).error ==
+        Error::UnknownMessageType);
+  // 0x17 is reserved for WifiConfig in P4 and must stay unknown for now.
+  CHECK(decode_message(static_cast<MessageType>(0x17),
+                       ByteView(payload)).error ==
+        Error::UnknownMessageType);
+
+  const Bytes state_payload =
+      encode_or_fail(Message{ui_layout_state_fixture()});
+  CHECK(state_payload.size() == 8);
+  Bytes state_trailing = state_payload;
+  state_trailing.push_back(0);
+  CHECK(decode_message(MessageType::UiLayoutState,
+                       ByteView(state_trailing)).error ==
+        Error::TrailingPayload);
+  const Bytes state_truncated(state_payload.begin(), state_payload.end() - 1);
+  CHECK(decode_message(MessageType::UiLayoutState,
+                       ByteView(state_truncated)).error ==
+        Error::TruncatedPayload);
+  Bytes state_revision = state_payload;
+  state_revision[0] = 2;
+  CHECK(decode_message(MessageType::UiLayoutState,
+                       ByteView(state_revision)).error ==
+        Error::UnsupportedPayloadRevision);
+  Bytes state_reserved = state_payload;
+  state_reserved[6] = 1;
+  CHECK(decode_message(MessageType::UiLayoutState,
+                       ByteView(state_reserved)).error ==
+        Error::OutOfRange);
+  Bytes state_source = state_payload;
+  state_source[3] = 3;
+  CHECK(decode_message(MessageType::UiLayoutState,
+                       ByteView(state_source)).error ==
+        Error::InvalidEnum);
+}
+
+void test_ui_layout_fragmentation_and_reassembly() {
+  const Message original{ui_layout_fixture()};
+  const Bytes payload = encode_or_fail(original);
+  const std::vector<Bytes> frames = fragment_or_fail(
+      MessageType::UiLayout, 0x3002U, payload, 20, AckRequested);
+  CHECK(frames.size() == 13);
+  Reassembler reassembler;
+  ReassemblyResult result;
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    CHECK(frames[i].size() <= 20);
+    result = reassembler.push(ByteView(frames[i]), 2'000 + i);
+    if (i + 1 < frames.size()) {
+      CHECK(result.state == ReassemblyState::InProgress);
+    }
+  }
+  CHECK(result.complete());
+  CHECK(result.message.type == MessageType::UiLayout);
+  CHECK((result.message.flags & AckRequested) != 0U);
+  CHECK(result.message.payload == payload);
+  const MessageResult decoded =
+      decode_message(result.message.type, ByteView(result.message.payload));
+  CHECK(decoded.ok());
+  if (decoded.ok()) {
+    CHECK(decoded.value == original);
+  }
+}
+
 void test_link_watchdog() {
   LinkWatchdog watchdog(3'000);
   CHECK(!watchdog.armed());
@@ -604,6 +1005,11 @@ int main(int argc, char** argv) {
   test_crc_duplicate_gap_conflict_and_timeout();
   test_supersession_duplicate_message_and_wrap();
   test_validation_failures();
+  test_ui_layout_protocol_constants();
+  test_ui_layout_round_trip_and_boundaries();
+  test_ui_layout_validation();
+  test_ui_layout_decode_failures();
+  test_ui_layout_fragmentation_and_reassembly();
   test_link_watchdog();
 
   if (failures != 0) {

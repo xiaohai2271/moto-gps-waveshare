@@ -45,6 +45,9 @@ using moto::ble::NavigationState;
 using moto::ble::NetworkState;
 using moto::ble::RouteGeometry;
 using moto::ble::TrafficLevel;
+using moto::ble::UiLayout;
+using moto::ble::UiLayoutComponent;
+using moto::ble::UiLayoutState;
 
 std::vector<jbyte> ToJBytes(const Bytes& bytes) {
   return std::vector<jbyte>(bytes.begin(), bytes.end());
@@ -172,6 +175,60 @@ DeviceCommand CommandFixture() {
   return value;
 }
 
+UiLayout UiLayoutFixture() {
+  UiLayout value;
+  value.layout_revision = 12;
+  value.flags = moto::ble::UiLayoutNorthUp |
+                moto::ble::UiLayoutMusicPageEnabled |
+                moto::ble::UiLayoutMapVisible;
+  value.theme = 0;
+  value.map_height_px = 232;
+  value.map_opacity = 100;
+  value.route_r = 255;
+  value.route_g = 255;
+  value.route_b = 255;
+  value.route_width_px = 6;
+  value.route_opacity = 100;
+  value.street_r = 0x8E;
+  value.street_g = 0x8E;
+  value.street_b = 0x93;
+  value.street_width_px = 3;
+  value.street_opacity = 35;
+  value.building_opacity = 25;
+  value.layer_mask = moto::ble::UiLayerRoads |
+                     moto::ble::UiLayerBuildings |
+                     moto::ble::UiLayerRoute;
+  value.zoom_percent = 100;
+  value.components = {
+      {1, static_cast<std::uint8_t>(moto::ble::UiComponentEnabled), 1, 100,
+       185, 300, 0, 0},
+      {2, static_cast<std::uint8_t>(moto::ble::UiComponentEnabled), 1, 100,
+       300, 238, 0, 0},
+      {3, 0, 1, 100, 24, 40, 0, 0},
+      {4, static_cast<std::uint8_t>(moto::ble::UiComponentEnabled), 1, 100,
+       29, 220, 0, 0},
+      {5, static_cast<std::uint8_t>(moto::ble::UiComponentEnabled), 1, 90,
+       150, 390, 0, 0},
+      {6, static_cast<std::uint8_t>(moto::ble::UiComponentEnabled), 1, 90,
+       250, 390, 0, 0},
+      {7, static_cast<std::uint8_t>(moto::ble::UiComponentEnabled), 1, 80, 0,
+       0, 0, 120},
+      {8, static_cast<std::uint8_t>(moto::ble::UiComponentEnabled), 1, 80, 0,
+       0, 2, 120},
+  };
+  return value;
+}
+
+UiLayoutState UiLayoutStateFixture() {
+  UiLayoutState value;
+  value.layout_revision = 12;
+  value.source = static_cast<std::uint8_t>(moto::ble::UiLayoutSource::Phone);
+  value.supported_mask = 0xFFU;
+  value.flags = moto::ble::UiLayoutNvsSaved;
+  value.reserved = 0;
+  return value;
+}
+
 }  // namespace
 
 extern "C" {
@@ -242,8 +299,12 @@ Java_dev_glimpse_motogps_NativeBridge_goldenVectors(JNIEnv* env,
   const BytesResult navigation_payload = Encode(Message{NavigationFixture()});
   const BytesResult geometry_payload = Encode(Message{GeometryFixture()});
   const BytesResult command_payload = Encode(Message{CommandFixture()});
+  const BytesResult ui_layout_payload = Encode(Message{UiLayoutFixture()});
+  const BytesResult ui_layout_state_payload =
+      Encode(Message{UiLayoutStateFixture()});
   if (!connection_payload.ok() || !navigation_payload.ok() ||
-      !geometry_payload.ok() || !command_payload.ok()) {
+      !geometry_payload.ok() || !command_payload.ok() ||
+      !ui_layout_payload.ok() || !ui_layout_state_payload.ok()) {
     Throw(env, "golden encode failed: ",
           !connection_payload.ok() ? connection_payload.error
                                    : navigation_payload.error);
@@ -258,7 +319,16 @@ Java_dev_glimpse_motogps_NativeBridge_goldenVectors(JNIEnv* env,
       moto::ble::MessageType::DeviceCommand, 0x1234,
       ByteView{command_payload.value.data(), command_payload.value.size()}, 20,
       moto::ble::AckRequested | moto::ble::Urgent);
-  if (!connection_frames.ok() || !command_frames.ok()) {
+  const FramesResult ui_layout_frames = moto::ble::fragment_message(
+      moto::ble::MessageType::UiLayout, 0x3001,
+      ByteView{ui_layout_payload.value.data(), ui_layout_payload.value.size()},
+      185, moto::ble::AckRequested);
+  const FramesResult ui_layout_frames20 = moto::ble::fragment_message(
+      moto::ble::MessageType::UiLayout, 0x3002,
+      ByteView{ui_layout_payload.value.data(), ui_layout_payload.value.size()},
+      20, moto::ble::AckRequested);
+  if (!connection_frames.ok() || !command_frames.ok() ||
+      !ui_layout_frames.ok() || !ui_layout_frames20.ok()) {
     Throw(env, "golden fragment failed: ", connection_frames.ok()
                                                ? command_frames.error
                                                : connection_frames.error);
@@ -271,6 +341,12 @@ Java_dev_glimpse_motogps_NativeBridge_goldenVectors(JNIEnv* env,
   report += "geometry.payload=" + Hex(geometry_payload.value) + "\n";
   report += "command.payload=" + Hex(command_payload.value) + "\n";
   report += "command.frames20=" + FramesToGolden(command_frames.value) + "\n";
+  report += "ui_layout.payload=" + Hex(ui_layout_payload.value) + "\n";
+  report += "ui_layout.frame=" + FramesToGolden(ui_layout_frames.value) + "\n";
+  report += "ui_layout.frames20=" + FramesToGolden(ui_layout_frames20.value) +
+            "\n";
+  report += "ui_layout_state.payload=" + Hex(ui_layout_state_payload.value) +
+            "\n";
   return env->NewStringUTF(report.c_str());
 }
 
@@ -1120,6 +1196,168 @@ Java_dev_glimpse_motogps_NativeBridge_encodeMediaState(
     return nullptr;
   }
   return MakeJByteArray(env, result.value);
+}
+
+// --- UI layout codec (docs/NAV_LAYOUT_EDITOR_PLAN.md §5.3/§5.4) ------------
+
+// fixed[15] = [layoutRevision, flags, themeId, mapHeightPx, mapOpacity,
+//              routeRgb, routeWidthPx, routeOpacity, streetRgb, streetWidthPx,
+//              streetOpacity, buildingOpacity, layerMask, zoomPercent,
+//              componentCount]
+// components[componentCount * 8] = [id, cflags, size, opacity, x, y, anchor,
+//                                   spanDeg] per component.
+// routeRgb/streetRgb are packed 0xRRGGBB; an ARGB 0xFFRRGGBB value is accepted.
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeUiLayout(
+    JNIEnv* env, jobject /*self*/, jintArray fixed, jintArray components) {
+  if (fixed == nullptr || components == nullptr ||
+      env->GetArrayLength(fixed) < 15) {
+    Throw(env, "encode ui layout failed: ",
+          moto::ble::Error::InvalidArgument);
+    return nullptr;
+  }
+  const jsize fixed_size = env->GetArrayLength(fixed);
+  std::vector<jint> fixed_values(static_cast<std::size_t>(fixed_size));
+  env->GetIntArrayRegion(fixed, 0, fixed_size, fixed_values.data());
+
+  const jint component_count = fixed_values[14];
+  const jsize component_values = env->GetArrayLength(components);
+  if (component_count < 0 ||
+      component_count >
+          static_cast<jint>(moto::ble::kMaxUiLayoutComponents) ||
+      component_values != component_count * 8) {
+    Throw(env, "encode ui layout component array mismatch: ",
+          moto::ble::Error::InvalidArgument);
+    return nullptr;
+  }
+  std::vector<jint> component_ints(
+      static_cast<std::size_t>(component_values));
+  if (component_values > 0) {
+    env->GetIntArrayRegion(components, 0, component_values,
+                           component_ints.data());
+  }
+
+  const auto as_byte = [env](jint value, const char* field,
+                             std::uint8_t* out) {
+    if (value < 0 || value > 0xFF) {
+      Throw(env, field, moto::ble::Error::InvalidArgument);
+      return false;
+    }
+    *out = static_cast<std::uint8_t>(value);
+    return true;
+  };
+  const auto as_int16 = [env](jint value, const char* field,
+                              std::int16_t* out) {
+    if (value < -32768 || value > 32767) {
+      Throw(env, field, moto::ble::Error::InvalidArgument);
+      return false;
+    }
+    *out = static_cast<std::int16_t>(value);
+    return true;
+  };
+
+  UiLayout layout;
+  if (fixed_values[0] < 0 || fixed_values[0] > 0xFFFF) {
+    Throw(env, "encode ui layout revision: ",
+          moto::ble::Error::InvalidArgument);
+    return nullptr;
+  }
+  layout.layout_revision = static_cast<std::uint16_t>(fixed_values[0]);
+  // map_height_px is u16 (docs §5.3, u16 revision): 160..466, even.
+  if (fixed_values[3] < 160 || fixed_values[3] > 466 ||
+      (fixed_values[3] & 1) != 0) {
+    Throw(env, "encode ui layout map height: ",
+          moto::ble::Error::InvalidArgument);
+    return nullptr;
+  }
+  layout.map_height_px = static_cast<std::uint16_t>(fixed_values[3]);
+  const std::uint32_t route_rgb =
+      static_cast<std::uint32_t>(fixed_values[5]);
+  layout.route_r = static_cast<std::uint8_t>((route_rgb >> 16U) & 0xFFU);
+  layout.route_g = static_cast<std::uint8_t>((route_rgb >> 8U) & 0xFFU);
+  layout.route_b = static_cast<std::uint8_t>(route_rgb & 0xFFU);
+  const std::uint32_t street_rgb =
+      static_cast<std::uint32_t>(fixed_values[8]);
+  layout.street_r = static_cast<std::uint8_t>((street_rgb >> 16U) & 0xFFU);
+  layout.street_g = static_cast<std::uint8_t>((street_rgb >> 8U) & 0xFFU);
+  layout.street_b = static_cast<std::uint8_t>(street_rgb & 0xFFU);
+  if (!as_byte(fixed_values[1], "encode ui layout flags: ", &layout.flags) ||
+      !as_byte(fixed_values[2], "encode ui layout theme: ", &layout.theme) ||
+      !as_byte(fixed_values[4], "encode ui layout map opacity: ",
+               &layout.map_opacity) ||
+      !as_byte(fixed_values[6], "encode ui layout route width: ",
+               &layout.route_width_px) ||
+      !as_byte(fixed_values[7], "encode ui layout route opacity: ",
+               &layout.route_opacity) ||
+      !as_byte(fixed_values[9], "encode ui layout street width: ",
+               &layout.street_width_px) ||
+      !as_byte(fixed_values[10], "encode ui layout street opacity: ",
+               &layout.street_opacity) ||
+      !as_byte(fixed_values[11], "encode ui layout building opacity: ",
+               &layout.building_opacity) ||
+      !as_byte(fixed_values[12], "encode ui layout layer mask: ",
+               &layout.layer_mask) ||
+      !as_byte(fixed_values[13], "encode ui layout zoom: ",
+               &layout.zoom_percent)) {
+    return nullptr;
+  }
+
+  layout.components.reserve(static_cast<std::size_t>(component_count));
+  for (jint i = 0; i < component_count; ++i) {
+    const jint* values = component_ints.data() + i * 8;
+    UiLayoutComponent component;
+    if (!as_byte(values[0], "encode ui layout component id: ",
+                 &component.id) ||
+        !as_byte(values[1], "encode ui layout component flags: ",
+                 &component.flags) ||
+        !as_byte(values[2], "encode ui layout component size: ",
+                 &component.size) ||
+        !as_byte(values[3], "encode ui layout component opacity: ",
+                 &component.opacity) ||
+        !as_int16(values[4], "encode ui layout component x: ",
+                  &component.x) ||
+        !as_int16(values[5], "encode ui layout component y: ",
+                  &component.y) ||
+        !as_byte(values[6], "encode ui layout component anchor: ",
+                 &component.anchor) ||
+        !as_byte(values[7], "encode ui layout component span: ",
+                 &component.span_deg)) {
+      return nullptr;
+    }
+    layout.components.push_back(component);
+  }
+
+  const BytesResult result = Encode(Message{layout});
+  if (!result.ok()) {
+    Throw(env, "encode ui layout failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
+}
+
+// @return [revision, layoutRevision, source, supportedMask, flags, reserved]
+JNIEXPORT jintArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_decodeUiLayoutState(
+    JNIEnv* env, jobject /*self*/, jbyteArray payload) {
+  Bytes buffer;
+  ReadBytes(env, payload, &buffer);
+  const moto::ble::MessageResult result = moto::ble::decode_message(
+      moto::ble::MessageType::UiLayoutState,
+      ByteView{buffer.data(), buffer.size()});
+  if (!result.ok()) {
+    Throw(env, "decode ui layout state failed: ", result.error);
+    return nullptr;
+  }
+  const auto& state = std::get<moto::ble::UiLayoutState>(result.value);
+  jint values[6] = {static_cast<jint>(moto::ble::kPayloadRevision),
+                    static_cast<jint>(state.layout_revision),
+                    static_cast<jint>(state.source),
+                    static_cast<jint>(state.supported_mask),
+                    static_cast<jint>(state.flags),
+                    static_cast<jint>(state.reserved)};
+  jintArray out = env->NewIntArray(6);
+  env->SetIntArrayRegion(out, 0, 6, values);
+  return out;
 }
 
 }  // extern "C"

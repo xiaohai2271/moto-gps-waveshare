@@ -54,6 +54,14 @@ constexpr std::size_t kMaxMapSceneRoads = 24;
 constexpr std::size_t kMaxMapSceneRoadPoints = 192;
 constexpr std::size_t kMaxMapSceneBuildings = 16;
 constexpr std::size_t kMaxMapSceneBuildingPoints = 128;
+// UiLayout is a bounded, atomically applied UI description. The 466 px canvas
+// is the device design space; component coordinates are its top-left corner.
+constexpr std::size_t kMaxUiLayoutComponents = 8;
+constexpr std::size_t kUiLayoutFixedSize = 22;
+constexpr std::size_t kUiLayoutComponentSize = 10;
+constexpr std::size_t kUiLayoutMaxPayloadSize =
+    kUiLayoutFixedSize + kMaxUiLayoutComponents * kUiLayoutComponentSize;
+constexpr std::uint16_t kUiLayoutCanvasPx = 466;
 
 struct ByteView {
   const std::uint8_t* data = nullptr;
@@ -116,6 +124,8 @@ enum class MessageType : std::uint8_t {
   TrafficDeviation = 0x12,
   MediaState = 0x13,
   MapScene = 0x14,
+  UiLayout = 0x15,
+  UiLayoutState = 0x16,
   DeviceCommand = 0x20,
 };
 
@@ -273,6 +283,10 @@ enum Capability : std::uint32_t {
   CapabilityMusicCommands = 1U << 5U,
   CapabilityCommandAck = 1U << 6U,
   CapabilityMapScene = 1U << 7U,
+  // Bit 8 gates UiLayout/UiLayoutState. WiFi provisioning messages are P4;
+  // their capability bit is reserved now so peers can negotiate it early.
+  CapabilityUiLayout = 1U << 8U,
+  CapabilityWifiProvisioning = 1U << 9U,
 };
 
 struct ConnectionStatus {
@@ -552,6 +566,136 @@ struct DeviceCommand {
   bool operator==(const DeviceCommand& rhs) const noexcept;
 };
 
+// --- UI layout (docs/NAV_LAYOUT_EDITOR_PLAN.md §5.3/§5.4) ------------------
+
+enum UiLayoutFlag : std::uint8_t {
+  UiLayoutNorthUp = 1U << 0U,
+  UiLayoutMusicPageEnabled = 1U << 1U,
+  UiLayoutMapVisible = 1U << 2U,
+};
+
+constexpr std::uint8_t kKnownUiLayoutFlags =
+    UiLayoutNorthUp | UiLayoutMusicPageEnabled | UiLayoutMapVisible;
+
+enum UiComponentFlag : std::uint8_t {
+  UiComponentEnabled = 1U << 0U,
+};
+
+constexpr std::uint8_t kKnownUiComponentFlags = UiComponentEnabled;
+
+enum UiLayerFlag : std::uint8_t {
+  UiLayerRoads = 1U << 0U,
+  UiLayerBuildings = 1U << 1U,
+  UiLayerRoute = 1U << 2U,
+};
+
+constexpr std::uint8_t kKnownUiLayerFlags =
+    UiLayerRoads | UiLayerBuildings | UiLayerRoute;
+
+enum UiLayoutStateFlag : std::uint8_t {
+  UiLayoutNvsSaved = 1U << 0U,
+};
+
+constexpr std::uint8_t kKnownUiLayoutStateFlags = UiLayoutNvsSaved;
+
+enum class UiThemeId : std::uint8_t {
+  Dark = 0,
+  Light = 1,
+  HighContrast = 2,
+  Custom = 3,
+};
+
+enum class UiComponentSize : std::uint8_t {
+  Small = 0,
+  Medium = 1,
+  Large = 2,
+};
+
+enum class UiArcAnchor : std::uint8_t {
+  Top = 0,
+  Right = 1,
+  Bottom = 2,
+  Left = 3,
+};
+
+// Stable wire IDs shared with the Android editor (docs §4.2).
+enum class UiComponentId : std::uint8_t {
+  Speed = 1,
+  SpeedLimit = 2,
+  Heading = 3,
+  Maneuver = 4,
+  RemainingDistance = 5,
+  RemainingTime = 6,
+  ProgressArc = 7,
+  SpeedArc = 8,
+};
+
+enum class UiLayoutSource : std::uint8_t {
+  Default = 0,
+  Nvs = 1,
+  Phone = 2,
+};
+
+// Arc components park on one of the four edges (docs §4.4/§4.5); every other
+// component uses free x/y placement inside the 466 px canvas.
+[[nodiscard]] constexpr bool ui_component_is_arc(
+    std::uint8_t id) noexcept {
+  return id == static_cast<std::uint8_t>(UiComponentId::ProgressArc) ||
+         id == static_cast<std::uint8_t>(UiComponentId::SpeedArc);
+}
+
+struct UiLayoutComponent {
+  std::uint8_t id = 0;
+  std::uint8_t flags = 0;
+  std::uint8_t size = 0;
+  std::uint8_t opacity = 0;
+  std::int16_t x = 0;
+  std::int16_t y = 0;
+  std::uint8_t anchor = 0;
+  std::uint8_t span_deg = 0;
+
+  bool operator==(const UiLayoutComponent& rhs) const noexcept;
+};
+
+// Fixed 22-byte header plus 10 bytes per component, little-endian. Colors are
+// carried as individual RGB bytes; the JNI adapter accepts a packed 0xRRGGBB.
+// map_height_px is u16 little-endian, valid range 160..466 (even), matching
+// the 466 px device canvas (docs/NAV_LAYOUT_EDITOR_PLAN.md §5.3).
+struct UiLayout {
+  std::uint16_t layout_revision = 0;
+  std::uint8_t flags = 0;
+  std::uint8_t theme = 0;
+  std::uint16_t map_height_px = 0;
+  std::uint8_t map_opacity = 0;
+  std::uint8_t route_r = 0;
+  std::uint8_t route_g = 0;
+  std::uint8_t route_b = 0;
+  std::uint8_t route_width_px = 0;
+  std::uint8_t route_opacity = 0;
+  std::uint8_t street_r = 0;
+  std::uint8_t street_g = 0;
+  std::uint8_t street_b = 0;
+  std::uint8_t street_width_px = 0;
+  std::uint8_t street_opacity = 0;
+  std::uint8_t building_opacity = 0;
+  std::uint8_t layer_mask = 0;
+  std::uint8_t zoom_percent = 0;
+  std::vector<UiLayoutComponent> components;
+
+  bool operator==(const UiLayout& rhs) const noexcept;
+};
+
+struct UiLayoutState {
+  std::uint16_t layout_revision = 0;
+  std::uint8_t source = 0;
+  // Bit 0..7 correspond to component IDs 1..8.
+  std::uint8_t supported_mask = 0;
+  std::uint8_t flags = 0;
+  std::uint16_t reserved = 0;
+
+  bool operator==(const UiLayoutState& rhs) const noexcept;
+};
+
 using Message = std::variant<ConnectionStatus,
                              Heartbeat,
                              Ack,
@@ -560,6 +704,8 @@ using Message = std::variant<ConnectionStatus,
                              TrafficDeviation,
                              MediaState,
                              MapScene,
+                             UiLayout,
+                             UiLayoutState,
                              DeviceCommand>;
 
 using MessageResult = Result<Message>;
