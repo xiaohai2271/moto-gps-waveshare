@@ -78,7 +78,8 @@ class MapDownloadsViewModel(application: Application) : AndroidViewModel(applica
                         searchFailure = if (cities.isEmpty()) "未找到城市或区县" else null,
                     )
                 }
-                .onFailure {
+                .onFailure { error ->
+                    android.util.Log.w("MotoGpsMap", "city search failed: ${error.message}")
                     _state.value = _state.value.copy(
                         searching = false,
                         cities = emptyList(),
@@ -86,6 +87,14 @@ class MapDownloadsViewModel(application: Application) : AndroidViewModel(applica
                     )
                 }
         }
+    }
+
+    /** Re-runs the last city search (iOS shows a 重试 button after a failure). */
+    fun retrySearch() {
+        val keywords = _state.value.query.trim()
+        if (keywords.length < 2) return
+        _state.value = _state.value.copy(searchFailure = null)
+        queryChanged(keywords)
     }
 
     fun downloadCity(city: CityArea) {

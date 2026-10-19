@@ -625,7 +625,8 @@ private fun RoutePreviewScreen(
             }
         }
 
-        Spacer(Modifier.weight(1f))
+        // No filler Spacer: the scrollable list owns the remaining height
+        // (weight 1f) and the action bar stays pinned below it.
         NavigationActionBar(vm, state)
     }
 }
@@ -779,7 +780,8 @@ private fun ActiveNavigationScreen(
             }
         }
 
-        Spacer(Modifier.weight(1f))
+        // No filler Spacer: the scrollable list owns the remaining height
+        // (weight 1f) and the action bar stays pinned below it.
         NavigationActionBar(vm, state)
     }
 }
@@ -1292,6 +1294,11 @@ private fun MapDownloadsSheet(onDismiss: () -> Unit) {
                             color = IosSecondary,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
                         )
+                        RowDivider()
+                        Row(
+                            Modifier.fillMaxWidth().clickable { vm.retrySearch() }
+                                .padding(horizontal = 16.dp, vertical = 11.dp),
+                        ) { Text("重试", fontSize = 16.sp, color = IosBlue) }
                     }
 
                     else -> state.cities.forEach { city ->

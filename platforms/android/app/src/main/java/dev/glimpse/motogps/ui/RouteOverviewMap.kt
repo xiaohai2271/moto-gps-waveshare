@@ -65,7 +65,11 @@ fun RouteOverviewMap(
     val blue = Color(0xFF007AFF)
     val gray = Color(0xFF8E8E93)
     val red = Color(0xFFFF3B30)
-    val background = Color(0xFFF2F2F7)
+    // A slightly darker tint than the grouped-list background so the map reads
+    // as a distinct surface instead of blending into the page (the iOS map has
+    // real map tiles behind the route).
+    val background = Color(0xFFE9E9EE)
+    val grid = Color(0x14000000)
 
     with(LocalDensity.current) {
         val padLeft = 30.dp.toPx()
@@ -93,6 +97,18 @@ fun RouteOverviewMap(
             }
 
             drawRect(background)
+            // Faint grid so the surface reads as a map even without tiles.
+            val step = (size.minDimension / 8f)
+            var gx = 0f
+            while (gx < size.width) {
+                drawLine(grid, Offset(gx, 0f), Offset(gx, size.height), strokeWidth = 1f)
+                gx += step
+            }
+            var gy = 0f
+            while (gy < size.height) {
+                drawLine(grid, Offset(0f, gy), Offset(size.width, gy), strokeWidth = 1f)
+                gy += step
+            }
 
             // Unselected routes first so the selected one draws on top.
             candidates.filter { it.id != selectedId }.forEach { candidate ->
