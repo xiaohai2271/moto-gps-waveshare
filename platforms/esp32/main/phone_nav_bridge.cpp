@@ -1,4 +1,4 @@
-﻿#include "phone_nav_bridge.h"
+#include "phone_nav_bridge.h"
 
 #include <algorithm>
 #include <cmath>
@@ -343,7 +343,9 @@ void PhoneNavBridge::on_link_state(bool active) {
       clear_map_context(phone_snapshot);
       heading_fusion_.reset();
       last_motion_present_ms_ = 0;
-      music_page_enabled_ = false;
+      // Losing the phone also loses the media capability; the layout switch
+      // itself is retained so a reconnect restores the user's choice.
+      media_music_available_ = false;
       media_state_ = {};
       media_state_.source_name = "iPhone";
       media_state_.track_title = "等待连接";
@@ -525,7 +527,10 @@ moto::ble::AckStatus PhoneNavBridge::on_message(
           {
             const std::lock_guard<std::mutex> lock(state_mutex_);
             phone_session_id_ = value.session_id;
-            music_page_enabled_ = media;
+            // Only record the media capability here. The user-facing music
+            // page switch lives in the UiLayout, and nav_ui combines both, so
+            // this bridge no longer overrides the user's choice.
+            media_music_available_ = media;
             switch (value.state) {
               case moto::ble::ConnectionState::Ready:
                 ui_phone_connection_ = MOTO_UI_PHONE_ONLINE;
@@ -938,7 +943,7 @@ void PhoneNavBridge::render_pending() {
     if (navigation) {
       render_phone_connection_ = ui_phone_connection_;
       render_demo_active_ = demo_active_;
-      render_music_page_enabled_ = music_page_enabled_;
+      render_media_music_available_ = media_music_available_;
     }
     if (media) {
       render_media_state_ = media_state_;
@@ -967,8 +972,10 @@ void PhoneNavBridge::render_pending() {
   if (navigation) {
     moto_nav_ui_set_phone_connection(render_phone_connection_);
     moto_nav_ui_set_demo_active(render_demo_active_ ? 1U : 0U);
+    // Only the media capability is pushed here; the user's music-page switch
+    // arrives through moto_nav_ui_apply_layout() and both are ANDed inside.
     moto_nav_ui_set_music_page_enabled(
-        render_music_page_enabled_ ? 1U : 0U);
+        render_media_music_available_ ? 1U : 0U);
     presenter_.apply_to_lvgl();
   } else if (motion) {
     moto_nav_ui_set_motion_state(&presenter_.ui_state());
