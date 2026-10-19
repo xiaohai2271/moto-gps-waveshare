@@ -105,8 +105,11 @@ class PhoneNavBridge {
   moto_ui_phone_connection_t ui_phone_connection_ = MOTO_UI_PHONE_OFFLINE;
   moto::ble::MediaState media_state_{};
   moto::ble::MediaState render_media_state_{};
-  bool music_page_enabled_ = false;
-  bool render_music_page_enabled_ = false;
+  // The media capability bit only gates the music page. The user-facing
+  // switch comes from the UiLayout and is applied through
+  // moto_nav_ui_apply_layout(), which combines both.
+  bool media_music_available_ = false;
+  bool render_media_music_available_ = false;
   moto_ui_phone_connection_t render_phone_connection_ =
       MOTO_UI_PHONE_OFFLINE;
   bool render_demo_active_ = false;
