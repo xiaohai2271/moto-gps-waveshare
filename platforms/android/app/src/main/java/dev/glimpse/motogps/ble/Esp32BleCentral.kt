@@ -65,6 +65,19 @@ class Esp32BleCentral(
     /** Receives decoded device gestures (page select, swipe, music keys). */
     var commandListener: ((RemoteCommand) -> Unit)? = null
 
+    /**
+     * Receives the device UiLayoutState (protocol §UiLayoutState): sent once
+     * after handshake Ready and again after a layout is applied. The editor
+     * compares layoutRevision to decide whether to push.
+     */
+    var layoutStateListener: ((DecodedLayoutState) -> Unit)? = null
+
+    /**
+     * Receives the device ACK for a pushed UiLayout (§5.6): true = Ok/Duplicate,
+     * false = rejected. Drives the editor's sync state.
+     */
+    var layoutAckListener: ((Boolean) -> Unit)? = null
+
     private var targetAddress: String? = null
     private var userInitiatedDisconnect = false
     private var txSequence = 0
@@ -78,6 +91,12 @@ class Esp32BleCentral(
     private var pendingSceneRevision = 0L
     private var sceneAttempts = 0
     private var lastSceneEncoded: ByteArray? = null
+    /** Layout push bookkeeping: one pending revision, ACK-tracked. */
+    private var pendingLayoutRevision = 0L
+    private var layoutAttempts = 0
+    private var lastLayoutEncoded: ByteArray? = null
+    /** Revision the device reported via UiLayoutState (0 = not reported). */
+    private var deviceLayoutRevision = 0L
     /** Recent device command ids for the current session, oldest first. */
     private val commandDeduper = DeviceCommandDeduper()
 
@@ -123,6 +142,11 @@ class Esp32BleCentral(
         sceneAttempts = 0
         lastSceneEncoded = null
         main.removeCallbacks(sceneTimeout)
+        main.removeCallbacks(layoutTimeout)
+        pendingLayoutRevision = 0
+        layoutAttempts = 0
+        lastLayoutEncoded = null
+        deviceLayoutRevision = 0
         handshakeAttempts = 0
         lastValidFrameAtMs = 0
         handshake.onTransportLost()
@@ -261,6 +285,59 @@ class Esp32BleCentral(
         }
     }
 
+    /**
+     * Sends one UiLayout (already encoded by layout/LayoutCodec) and waits for
+     * the device ACK (§5.6: 750 ms, up to 2 retries). Requires capability
+     * bit8; returns false when the device did not offer it.
+     */
+    fun sendUiLayout(layoutRevision: Long, encoded: ByteArray): Boolean {
+        val connected = _state.value as? State.Connected ?: return false
+        if (connected.capabilities and BleProtocol.Capability.UI_LAYOUT == 0L) return false
+        pendingLayoutRevision = layoutRevision
+        layoutAttempts = 1
+        lastLayoutEncoded = encoded
+        fragmentLayout(encoded)
+        scheduleLayoutTimeout()
+        return true
+    }
+
+    /** The layout revision the device last reported (UiLayoutState), 0 if none. */
+    fun reportedLayoutRevision(): Long = deviceLayoutRevision
+
+    private fun fragmentLayout(encoded: ByteArray) {
+        val frames = runCatching {
+            codec.fragment(
+                BleProtocol.MessageType.UI_LAYOUT, nextSequence(), encoded,
+                currentFrameSize(), BleProtocol.Flags.ACK_REQUESTED,
+            )
+        }.getOrElse {
+            logLine("圆屏布局分片失败：${it.message}")
+            return
+        }
+        outbound.enqueueMessage(frames, "ui-layout")
+        schedulePump()
+    }
+
+    private fun scheduleLayoutTimeout() {
+        main.removeCallbacks(layoutTimeout)
+        main.postDelayed(layoutTimeout, LAYOUT_ACK_TIMEOUT_MS)
+    }
+
+    private val layoutTimeout = object : Runnable {
+        override fun run() {
+            if (pendingLayoutRevision == 0L) return
+            if (layoutAttempts >= MAX_LAYOUT_ATTEMPTS) {
+                logLine("圆屏布局未确认，标记待同步（revision=$pendingLayoutRevision）")
+                pendingLayoutRevision = 0
+                return
+            }
+            logLine("圆屏布局 ACK 超时，重发（第 ${layoutAttempts + 1} 次）")
+            layoutAttempts += 1
+            lastLayoutEncoded?.let { fragmentLayout(it) }
+            main.postDelayed(this, LAYOUT_ACK_TIMEOUT_MS)
+        }
+    }
+
     // --- BleTransport.Listener -------------------------------------------
 
     override fun onBluetoothUnavailable(reason: String) {
@@ -390,6 +467,35 @@ class Esp32BleCentral(
                     lastSceneEncoded = null
                     logLine("地图场景已确认 revision=$revision")
                 }
+                if (pendingLayoutRevision != 0L && (ack.status == 0 || ack.status == 4)) {
+                    val revision = pendingLayoutRevision
+                    pendingLayoutRevision = 0
+                    main.removeCallbacks(layoutTimeout)
+                    lastLayoutEncoded = null
+                    logLine("圆屏布局已确认 revision=$revision")
+                    runCatching { layoutAckListener?.invoke(true) }
+                } else if (pendingLayoutRevision != 0L && ack.status != 0 && ack.status != 4) {
+                    val revision = pendingLayoutRevision
+                    pendingLayoutRevision = 0
+                    main.removeCallbacks(layoutTimeout)
+                    lastLayoutEncoded = null
+                    logLine("圆屏布局被拒绝 revision=$revision status=${ack.status}")
+                    runCatching { layoutAckListener?.invoke(false) }
+                }
+            }
+
+            BleProtocol.MessageType.UI_LAYOUT_STATE -> {
+                val state = runCatching { codec.decodeUiLayoutState(message.payload) }
+                    .getOrElse {
+                        logLine("UiLayoutState 解码失败")
+                        return
+                    }
+                deviceLayoutRevision = state.layoutRevision.toLong()
+                logLine(
+                    "圆屏布局状态 revision=${state.layoutRevision} " +
+                        "source=${state.source} mask=0x${state.supportedMask.toString(16)}",
+                )
+                runCatching { layoutStateListener?.invoke(state) }
             }
 
             BleProtocol.MessageType.DEVICE_COMMAND -> {
@@ -617,6 +723,9 @@ class Esp32BleCentral(
         const val MAX_HANDSHAKE_ATTEMPTS = 5
         const val SCENE_ACK_TIMEOUT_MS = 3_000L
         const val MAX_SCENE_ATTEMPTS = 3
+        /** §5.6: ACK timeout 750 ms, up to 2 retries for the layout push. */
+        const val LAYOUT_ACK_TIMEOUT_MS = 750L
+        const val MAX_LAYOUT_ATTEMPTS = 3
         const val STATUS_OK = 0
         /** Protocol status for an already handled (session_id, command_id). */
         const val STATUS_DUPLICATE = 4

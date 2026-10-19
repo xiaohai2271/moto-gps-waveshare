@@ -10,8 +10,6 @@
 #include "lvgl.h"
 
 LV_FONT_DECLARE(moto_font_nav_16);
-LV_FONT_DECLARE(moto_font_nav_20);
-LV_FONT_DECLARE(moto_font_nav_28);
 
 namespace {
 
@@ -244,8 +242,7 @@ lv_color_t traffic_color(moto_traffic_t traffic) {
 }
 
 const char *cardinal_name(std::uint16_t heading) {
-    static const char *names[] = {"北", "东北", "东", "东南",
-                                  "南", "西南", "西", "西北"};
+    static const char *names[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
     return names[((heading + 22U) / 45U) % 8U];
 }
 
@@ -361,14 +358,10 @@ void gesture_event(lv_event_t *) {
                                         : MOTO_UI_PAGE_COMPASS;
     }
     const auto requested = static_cast<moto_ui_page_t>(next);
-    // Switch locally first: the phone only echoes display_page in the next
-    // snapshot (~200 ms + queue), and deriving the following gesture from a
-    // stale page made fast swipes jump to the wrong page. The callback below
-    // only informs the phone so both sides stay in sync; the echo is now a
-    // no-op on this side.
-    show_page(requested, true);
     if(ui.page_callback != nullptr) {
         ui.page_callback(requested, ui.page_callback_context);
+    } else {
+        show_page(requested, true);
     }
     reveal_page_dots();
     lv_indev_wait_release(indev);
@@ -1181,32 +1174,32 @@ void set_layer_opacity(void *object, int32_t opacity) {
 
 void apply_lifecycle_content(LifecycleVisual visual) {
     ui.lifecycle_visual = visual;
-    const char *kicker = "MOTO GPS / 手机连接";
+    const char *kicker = "MOTO GPS / PHONE LINK";
     const char *title = "";
     const char *subtitle = "";
     lv_color_t title_color = kWhite;
     switch(visual) {
         case LifecycleVisual::PhoneOffline:
-            title = "连接手机";
+            title = "CONNECT PHONE";
             subtitle = "请打开手机应用";
             break;
         case LifecycleVisual::PhoneConnecting:
-            title = "正在连接";
+            title = "CONNECTING";
             subtitle = "正在建立连接";
             break;
         case LifecycleVisual::Connected:
-            title = "已连接";
+            title = "CONNECTED";
             subtitle = "连接成功";
             title_color = kGreen;
             break;
         case LifecycleVisual::Ready:
-            kicker = "MOTO GPS / 就绪";
-            title = "准备出发";
+            kicker = "MOTO GPS / READY";
+            title = "READY TO RIDE";
             subtitle = "请在手机选择目的地";
             break;
         case LifecycleVisual::Planning:
-            kicker = "MOTO GPS / 路线";
-            title = "规划路线";
+            kicker = "MOTO GPS / ROUTE";
+            title = "BUILDING ROUTE";
             subtitle = "正在规划路线";
             break;
         case LifecycleVisual::Hidden:
@@ -1356,7 +1349,7 @@ void update_nav_status(const moto_ui_state_t *state) {
     const char *text = "";
     lv_color_t color = kQuiet;
     if(ui.demo_active) {
-        lv_label_set_text(ui.nav_status, "演示导航");
+        lv_label_set_text(ui.nav_status, "DEMO RIDE");
         lv_obj_set_style_text_color(ui.nav_status, kWhite, 0);
         return;
     }
@@ -1367,12 +1360,12 @@ void update_nav_status(const moto_ui_state_t *state) {
         return;
     }
     switch(state->mode) {
-        case MOTO_UI_ACQUIRING_FIX: text = "获取定位"; color = kAmber; break;
-        case MOTO_UI_REROUTING: text = "重新规划"; color = kAmber; break;
-        case MOTO_UI_OFFLINE: text = "离线路线"; color = kQuiet; break;
-        case MOTO_UI_ARRIVED: text = "已到达"; color = kGreen; break;
+        case MOTO_UI_ACQUIRING_FIX: text = "ACQUIRING GPS"; color = kAmber; break;
+        case MOTO_UI_REROUTING: text = "REROUTING"; color = kAmber; break;
+        case MOTO_UI_OFFLINE: text = "ROUTE CACHED"; color = kQuiet; break;
+        case MOTO_UI_ARRIVED: text = "ARRIVED"; color = kGreen; break;
         case MOTO_UI_NAVIGATING:
-            if(state->online == 0) text = "无热点";
+            if(state->online == 0) text = "NO HOTSPOT";
             break;
     }
     lv_label_set_text(ui.nav_status, text);
@@ -1475,7 +1468,7 @@ void update_compass(const moto_ui_state_t *state) {
     }
 
     static const double bearings[4] = {0.0, 90.0, 180.0, 270.0};
-    static const char *letters[4] = {"北", "东", "南", "西"};
+    static const char *letters[4] = {"N", "E", "S", "W"};
     for(int i = 0; i < 4; ++i) {
         const double angle = bearings[i] * kPi / 180.0 - heading_rad;
         const int x = static_cast<int>(px(180.0) + std::sin(angle) * px(112.0));
@@ -1487,11 +1480,11 @@ void update_compass(const moto_ui_state_t *state) {
 }
 
 void update_music_view() {
-    lv_label_set_text(ui.music_source, ui.music.connected ? ui.music_source_text : "手机未连接");
+    lv_label_set_text(ui.music_source, ui.music.connected ? ui.music_source_text : "PHONE NOT CONNECTED");
     lv_label_set_text(ui.music_title, ui.music_title_text);
     lv_label_set_text(ui.music_artist, ui.music_artist_text);
     lv_label_set_text(ui.music_button_labels[1], ui.music.playing ? "II" : ">");
-    lv_label_set_text(ui.music_button_labels[3], ui.music.liked ? "已赞" : "喜欢");
+    lv_label_set_text(ui.music_button_labels[3], ui.music.liked ? "SENT" : "LIKE");
     if(ui.music.like_available) {
         lv_obj_remove_flag(ui.music_buttons[3], LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -1651,8 +1644,8 @@ void create_navigation_page() {
     lv_obj_add_flag(ui.nav_lifecycle, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     ui.nav_lifecycle_kicker = make_label(
-        ui.nav_lifecycle, &moto_font_nav_16, kQuiet,
-        "MOTO GPS / 手机连接");
+        ui.nav_lifecycle, &lv_font_montserrat_16, kQuiet,
+        "MOTO GPS / PHONE LINK");
     lv_obj_set_style_text_letter_space(ui.nav_lifecycle_kicker, px(2), 0);
     lv_obj_align(ui.nav_lifecycle_kicker, LV_ALIGN_TOP_MID, 0, px(39));
 
@@ -1665,7 +1658,7 @@ void create_navigation_page() {
                         LV_EVENT_DRAW_MAIN_END, nullptr);
 
     ui.nav_lifecycle_title = make_label(
-        ui.nav_lifecycle, &moto_font_nav_28, kWhite, "连接手机");
+        ui.nav_lifecycle, &lv_font_montserrat_28, kWhite, "CONNECT PHONE");
     lv_obj_set_width(ui.nav_lifecycle_title, px(310));
     lv_obj_set_style_text_align(ui.nav_lifecycle_title,
                                 LV_TEXT_ALIGN_CENTER, 0);
@@ -1690,7 +1683,7 @@ void create_navigation_page() {
 
 void create_speed_page() {
     lv_obj_t *page = ui.pages[MOTO_UI_PAGE_SPEED];
-    lv_obj_t *title = make_label(page, &moto_font_nav_16, kQuiet, "速度");
+    lv_obj_t *title = make_label(page, &lv_font_montserrat_16, kQuiet, "SPEED");
     lv_obj_set_style_text_letter_space(title, px(4), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, px(48));
 
@@ -1730,7 +1723,7 @@ void create_speed_page() {
     lv_obj_t *unit = make_label(page, &lv_font_montserrat_20, kQuiet, "km/h");
     lv_obj_set_style_text_letter_space(unit, px(2), 0);
     lv_obj_align(unit, LV_ALIGN_CENTER, 0, px(45));
-    lv_obj_t *caption = make_label(page, &moto_font_nav_16, kQuiet, "实时速度");
+    lv_obj_t *caption = make_label(page, &lv_font_montserrat_16, kQuiet, "LIVE SPEED");
     lv_obj_set_style_text_letter_space(caption, px(2), 0);
     lv_obj_align(caption, LV_ALIGN_BOTTOM_MID, 0, px(-49));
 }
@@ -1745,7 +1738,7 @@ void create_compass_page() {
         lv_obj_set_style_line_color(ui.compass_ticks[i], kQuiet, 0);
     }
     for(int i = 0; i < 4; ++i) {
-        ui.compass_letters[i] = make_label(page, &moto_font_nav_16, kQuiet, "北");
+        ui.compass_letters[i] = make_label(page, &lv_font_montserrat_16, kQuiet, "N");
         lv_obj_set_size(ui.compass_letters[i], px(28), px(22));
         lv_obj_set_style_text_align(ui.compass_letters[i], LV_TEXT_ALIGN_CENTER, 0);
     }
@@ -1759,7 +1752,7 @@ void create_compass_page() {
 
     ui.compass_heading = make_label(page, &lv_font_montserrat_48, kAmber, "359°");
     lv_obj_align(ui.compass_heading, LV_ALIGN_CENTER, 0, px(-37));
-    ui.compass_cardinal = make_label(page, &moto_font_nav_20, kAmber, "北");
+    ui.compass_cardinal = make_label(page, &lv_font_montserrat_20, kAmber, "N");
     lv_obj_align(ui.compass_cardinal, LV_ALIGN_CENTER, 0, px(10));
     ui.compass_speed = make_label(page, &lv_font_montserrat_20, kWhite, "72 km/h");
     lv_obj_set_style_text_letter_space(ui.compass_speed, px(1), 0);
@@ -1768,7 +1761,7 @@ void create_compass_page() {
 
 void create_music_page() {
     lv_obj_t *page = ui.pages[MOTO_UI_PAGE_MUSIC];
-    ui.music_source = make_label(page, &moto_font_nav_16, kQuiet, "手机音乐");
+    ui.music_source = make_label(page, &lv_font_montserrat_16, kQuiet, "APPLE MUSIC");
     lv_obj_set_style_text_letter_space(ui.music_source, px(2), 0);
     lv_obj_align(ui.music_source, LV_ALIGN_TOP_MID, 0, px(37));
 
@@ -1789,18 +1782,18 @@ void create_music_page() {
     lv_obj_set_style_bg_opa(core, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(core, 0, 0);
 
-    ui.music_title = make_label(page, &moto_font_nav_20, kWhite, "等待播放");
+    ui.music_title = make_label(page, &lv_font_montserrat_20, kWhite, "NIGHT RIDE");
     lv_obj_set_width(ui.music_title, px(260));
     lv_obj_set_style_text_align(ui.music_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.music_title, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.music_title, LV_ALIGN_TOP_MID, 0, px(190));
-    ui.music_artist = make_label(page, &moto_font_nav_16, kQuiet, "手机正在播放");
+    ui.music_artist = make_label(page, &lv_font_montserrat_16, kQuiet, "PHONE NOW PLAYING");
     lv_obj_set_width(ui.music_artist, px(260));
     lv_obj_set_style_text_align(ui.music_artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.music_artist, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.music_artist, LV_ALIGN_TOP_MID, 0, px(216));
 
-    static const char *labels[4] = {"<<", ">", ">>", "喜欢"};
+    static const char *labels[4] = {"<<", ">", ">>", "LIKE"};
     static const int positions[4][3] = {
         {72, 254, 54}, {153, 247, 62}, {234, 254, 54}, {147, 312, 66},
     };
@@ -1839,8 +1832,7 @@ void create_music_page() {
             ui.music_buttons[i], music_button_event, LV_EVENT_CLICKED,
             reinterpret_cast<void *>(static_cast<std::intptr_t>(i)));
         ui.music_button_labels[i] = make_label(
-            ui.music_buttons[i],
-            i == 3 ? &moto_font_nav_16 : &moto_font_nav_20,
+            ui.music_buttons[i], i == 3 ? &lv_font_montserrat_16 : &lv_font_montserrat_20,
             i == 1 ? kBlack : kWhite, labels[i]);
         lv_obj_center(ui.music_button_labels[i]);
     }
@@ -1964,9 +1956,9 @@ extern "C" void moto_nav_ui_show_power_off_screen(void) {
     lv_obj_set_style_text_outline_stroke_opa(brand, LV_OPA_COVER, 0);
     lv_obj_align(brand, LV_ALIGN_CENTER, 0, px(-18));
 
-    lv_obj_t *status = make_label(ui.screen, &moto_font_nav_16,
+    lv_obj_t *status = make_label(ui.screen, &lv_font_montserrat_16,
                                   LV_COLOR_MAKE(0xFF, 0xFF, 0xFF),
-                                  "关机中");
+                                  "POWER OFF");
     lv_obj_set_style_text_letter_space(status, px(4), 0);
     lv_obj_align(status, LV_ALIGN_CENTER, 0, px(35));
 }
@@ -1994,7 +1986,7 @@ extern "C" void moto_nav_ui_create(void) {
     install_interaction_wake(ui.screen);
 
     moto_music_state_t initial_music = {
-        "手机音乐", "等待播放", "手机正在播放", 1, 1, 0, 0,
+        "APPLE MUSIC", "NIGHT RIDE", "PHONE NOW PLAYING", 1, 1, 0, 0,
     };
     moto_nav_ui_set_music_state(&initial_music);
 
@@ -2094,7 +2086,7 @@ extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t *state) {
     if(state == nullptr || ui.screen == nullptr) return;
     ui.music = *state;
     copy_text(ui.music_source_text, sizeof(ui.music_source_text),
-              state->source_name, "手机音乐");
+              state->source_name, "PHONE MEDIA");
     copy_text(ui.music_title_text, sizeof(ui.music_title_text),
               state->track_title, "--");
     copy_text(ui.music_artist_text, sizeof(ui.music_artist_text),

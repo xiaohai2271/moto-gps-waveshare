@@ -1,8 +1,5 @@
 package dev.glimpse.motogps
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,7 +11,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
-import androidx.core.content.ContextCompat
+import dev.glimpse.motogps.permissions.PermissionCenter
 import dev.glimpse.motogps.ui.MotoAppScreen
 
 class MainActivity : ComponentActivity() {
@@ -69,22 +66,11 @@ class MainActivity : ComponentActivity() {
      * Location, Bluetooth and notification permissions are requested once on
      * first launch, mirroring the iOS permission prompts. Denying a permission
      * never crashes the app: features degrade and the UI explains the state.
+     * The wanted-permission list lives in permissions/PermissionLogic so the
+     * permission center (PermissionCenterScreen) reuses the same source.
      */
     private fun requestMissingPermissions() {
-        val wanted = buildList {
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
-            add(Manifest.permission.ACCESS_COARSE_LOCATION)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                add(Manifest.permission.BLUETOOTH_SCAN)
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-        val missing = wanted.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
+        val missing = PermissionCenter.startupMissingPermissions(this)
+        if (missing.isNotEmpty()) permissionLauncher.launch(missing)
     }
 }

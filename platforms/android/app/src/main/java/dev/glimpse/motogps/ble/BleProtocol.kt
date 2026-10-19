@@ -30,6 +30,8 @@ object BleProtocol {
         const val TRAFFIC_DEVIATION = 0x12
         const val MEDIA_STATE = 0x13
         const val MAP_SCENE = 0x14
+        const val UI_LAYOUT = 0x15
+        const val UI_LAYOUT_STATE = 0x16
         const val DEVICE_COMMAND = 0x20
     }
 
@@ -62,13 +64,16 @@ object BleProtocol {
         const val MUSIC_COMMANDS = 1L shl 5
         const val COMMAND_ACK = 1L shl 6
         const val MAP_SCENE = 1L shl 7
+        const val UI_LAYOUT = 1L shl 8
+        const val WIFI_PROVISIONING = 1L shl 9
     }
 
     /** What the phone offers; intersection with the device is negotiated. */
     const val PHONE_CAPABILITIES: Long =
         Capability.NAVIGATION or Capability.ROUTE_GEOMETRY or Capability.TRAFFIC or
             Capability.MEDIA_STATE or Capability.TOUCH_COMMANDS or
-            Capability.MUSIC_COMMANDS or Capability.COMMAND_ACK or Capability.MAP_SCENE
+            Capability.MUSIC_COMMANDS or Capability.COMMAND_ACK or Capability.MAP_SCENE or
+            Capability.UI_LAYOUT
 
     const val DEFAULT_HEARTBEAT_INTERVAL_MS = 1000
     const val DEVICE_LIVENESS_TIMEOUT_MS = 5000L

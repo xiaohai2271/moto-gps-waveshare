@@ -176,4 +176,25 @@ object NativeBridge {
         trackTitle: String,
         artistName: String,
     ): ByteArray
+
+    /**
+     * Encodes one UiLayout (protocol §UiLayout). The shared C++ codec owns the
+     * byte format; Kotlin only maps the model onto the int arrays.
+     *
+     * fixed[15] = layoutRevision, flags, themeId, mapHeightPx, mapOpacity,
+     *   routeRgb(0xRRGGBB), routeWidthPx, routeOpacity, streetRgb(0xRRGGBB),
+     *   streetWidthPx, streetOpacity, buildingOpacity, layerMask, zoomPercent,
+     *   componentCount
+     * components[componentCount * 8] = per component
+     *   [id, cflags, size, opacity, x, y, anchor, spanDeg]
+     * Wire constraints (violations raise IllegalStateException):
+     *   - componentCount == components.size / 8, ids unique in 1..8
+     *   - size in 0..2, opacity in 0..100
+     *   - arcs (id 7/8): x == y == 0, anchor in 0..3, spanDeg in {90,120,180}
+     *   - non-arcs: anchor == spanDeg == 0, x/y within the 466 canvas
+     */
+    external fun encodeUiLayout(fixed: IntArray, components: IntArray): ByteArray
+
+    /** @return [revision, layoutRevision, source, supportedMask, flags, reserved] */
+    external fun decodeUiLayoutState(payload: ByteArray): IntArray
 }

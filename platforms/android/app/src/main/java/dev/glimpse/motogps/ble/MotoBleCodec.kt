@@ -30,6 +30,20 @@ data class RemoteCommand(
 data class DecodedAck(val acknowledgedSequence: Int, val status: Int, val commandId: Int)
 
 /**
+ * Decoded UiLayoutState (device -> phone, protocol §UiLayoutState). Values map
+ * straight onto the C++ decodeUiLayoutState result; the rich model lives in
+ * layout/LayoutCodec to keep this file free of editor dependencies.
+ */
+data class DecodedLayoutState(
+    val revision: Int,
+    val layoutRevision: Int,
+    val source: Int,
+    val supportedMask: Int,
+    val flags: Int,
+    val reserved: Int,
+)
+
+/**
  * Kotlin facade over the shared C++ BLE codec. Every byte placed on the wire is
  * produced by shared/ble_protocol; Kotlin only schedules and routes frames.
  */
@@ -86,6 +100,27 @@ class MotoBleCodec : AutoCloseable {
     fun decodeDeviceCommand(payload: ByteArray): RemoteCommand {
         val v = NativeBridge.decodeDeviceCommand(payload)
         return RemoteCommand(v[1].toInt(), v[2].toInt(), v[3].toInt(), v[4].toInt(), v[5].toInt(), v[6])
+    }
+
+    /**
+     * Encodes one UiLayout via the shared C++ codec (protocol §UiLayout).
+     * The model→int-array mapping lives in layout/LayoutCodec; this method is
+     * the thin byte-level facade matching the other encode* methods.
+     */
+    fun encodeUiLayout(fixed: IntArray, components: IntArray): ByteArray =
+        NativeBridge.encodeUiLayout(fixed, components)
+
+    /** Decodes UiLayoutState; throws on malformed payloads. */
+    fun decodeUiLayoutState(payload: ByteArray): DecodedLayoutState {
+        val v = NativeBridge.decodeUiLayoutState(payload)
+        return DecodedLayoutState(
+            revision = v[0],
+            layoutRevision = v[1],
+            source = v[2],
+            supportedMask = v[3],
+            flags = v[4],
+            reserved = v[5],
+        )
     }
 
     /** Result of pushing one inbound GATT notification into the C++ reassembler. */

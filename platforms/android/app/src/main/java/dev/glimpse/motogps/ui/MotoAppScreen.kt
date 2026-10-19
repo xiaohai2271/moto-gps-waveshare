@@ -66,13 +66,13 @@ import dev.glimpse.motogps.nav.SavedPlace
  * exactly like the iOS app.
  */
 
-// iOS system colors used by the SwiftUI design.
-private val IosBlue = Color(0xFF007AFF)
-private val IosGreen = Color(0xFF34C759)
-private val IosRed = Color(0xFFFF3B30)
-private val IosOrange = Color(0xFFFF9500)
-private val IosSecondary = Color(0xFF8E8E93)
-private val IosSeparator = Color(0x1F000000)
+// iOS system colors used by the SwiftUI design. Shared with LayoutEditorScreen.
+internal val IosBlue = Color(0xFF007AFF)
+internal val IosGreen = Color(0xFF34C759)
+internal val IosRed = Color(0xFFFF3B30)
+internal val IosOrange = Color(0xFFFF9500)
+internal val IosSecondary = Color(0xFF8E8E93)
+internal val IosSeparator = Color(0x1F000000)
 private val IosGroupedBackground = Color(0xFFF2F2F7)
 private val IosCard = Color.White
 
@@ -91,6 +91,17 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
     var showGateway by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
     var showMapDownloads by remember { mutableStateOf(false) }
+    var showLayoutEditor by remember { mutableStateOf(false) }
+    var showPermissions by remember { mutableStateOf(false) }
+
+    if (showLayoutEditor) {
+        LayoutEditorScreen(
+            editor = vm.layoutEditor,
+            onPushLayout = { vm.scheduleLayoutPush() },
+            onBack = { showLayoutEditor = false },
+        )
+        return
+    }
 
     Surface(color = IosGroupedBackground) {
         when (screen) {
@@ -114,10 +125,17 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
         }
     }
 
-    if (showDevice) DeviceDetailsSheet(vm, bleState, onDismiss = { showDevice = false })
+    if (showDevice) DeviceDetailsSheet(
+        vm,
+        bleState,
+        onDismiss = { showDevice = false },
+        onOpenLayoutEditor = { showLayoutEditor = true },
+        onOpenPermissions = { showPermissions = true },
+    )
     if (showGateway) GatewaySettingsSheet(vm, onDismiss = { showGateway = false })
     if (showPrivacy) DataUseSheet(onDismiss = { showPrivacy = false })
     if (showMapDownloads) MapDownloadsSheet(onDismiss = { showMapDownloads = false })
+    if (showPermissions) PermissionCenterSheet(onDismiss = { showPermissions = false })
 }
 
 enum class MotoScreen { Home, RoutePreview, ActiveNavigation }
@@ -871,7 +889,13 @@ private fun navigationSymbol(state: NavigationSession.UiState): String = when {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DeviceDetailsSheet(vm: NavViewModel, bleState: Esp32BleCentral.State, onDismiss: () -> Unit) {
+private fun DeviceDetailsSheet(
+    vm: NavViewModel,
+    bleState: Esp32BleCentral.State,
+    onDismiss: () -> Unit,
+    onOpenLayoutEditor: () -> Unit,
+    onOpenPermissions: () -> Unit,
+) {
     val devices by vm.devices.collectAsState()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
@@ -966,6 +990,53 @@ private fun DeviceDetailsSheet(vm: NavViewModel, bleState: Esp32BleCentral.State
                             Text("${device.rssi} dBm", fontSize = 12.sp, color = IosSecondary)
                         }
                     }
+                }
+            }
+            GroupSection(
+                header = "圆屏布局",
+                footer = when {
+                    bleState !is Esp32BleCentral.State.Connected ->
+                        "未连接时也可以编辑布局，连接圆屏后会自动同步。"
+                    vm.deviceSupportsLayout -> "连接后自动同步；修改会实时生效。"
+                    else -> "当前固件不支持布局编辑，需要升级固件后使用。"
+                },
+            ) {
+                val layoutSupported = bleState !is Esp32BleCentral.State.Connected || vm.deviceSupportsLayout
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clickable(enabled = layoutSupported) { onOpenLayoutEditor() }
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("🎛", fontSize = 16.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "圆屏布局",
+                            fontSize = 16.sp,
+                            color = if (layoutSupported) Color(0xFF000000) else IosSecondary,
+                        )
+                        if (!layoutSupported) {
+                            Text("固件需升级", fontSize = 13.sp, color = IosOrange)
+                        }
+                    }
+                    if (layoutSupported) {
+                        Text("›", fontSize = 14.sp, color = IosSecondary.copy(alpha = 0.6f))
+                    }
+                }
+            }
+            GroupSection(header = "权限") {
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clickable { onOpenPermissions() }
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("🛡", fontSize = 16.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("权限检查", fontSize = 16.sp, color = Color(0xFF000000))
+                    Spacer(Modifier.weight(1f))
+                    Text("›", fontSize = 14.sp, color = IosSecondary.copy(alpha = 0.6f))
                 }
             }
             GroupSection(header = "定位") {
