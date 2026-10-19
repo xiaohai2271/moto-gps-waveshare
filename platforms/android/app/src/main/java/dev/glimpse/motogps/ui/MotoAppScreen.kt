@@ -2,6 +2,7 @@ package dev.glimpse.motogps.ui
 
 import android.content.Intent
 import android.provider.Settings
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,13 +13,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -27,11 +30,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,13 +56,24 @@ import dev.glimpse.motogps.gateway.Place
 import dev.glimpse.motogps.nav.NavigationSession
 import dev.glimpse.motogps.nav.RideFormatting
 import dev.glimpse.motogps.nav.RouteCandidate
+import dev.glimpse.motogps.nav.SavedPlace
 
 /**
- * Single primary flow ported from the iOS app (ContentView.swift):
+ * High-fidelity port of the iOS single-flow UI (ContentView.swift):
  * 出发 (destination search) → 路线 (route preview) → 导航中 (ride).
- * Device, map downloads, gateway and privacy are secondary sheets.
+ * Device details, map downloads, gateway settings and data use are sheets,
+ * exactly like the iOS app.
  */
-enum class MotoScreen { Home, RoutePreview, ActiveNavigation }
+
+// iOS system colors used by the SwiftUI design.
+private val IosBlue = Color(0xFF007AFF)
+private val IosGreen = Color(0xFF34C759)
+private val IosRed = Color(0xFFFF3B30)
+private val IosOrange = Color(0xFFFF9500)
+private val IosSecondary = Color(0xFF8E8E93)
+private val IosSeparator = Color(0x1F000000)
+private val IosGroupedBackground = Color(0xFFF2F2F7)
+private val IosCard = Color.White
 
 @Composable
 fun MotoAppScreen(vm: NavViewModel = viewModel()) {
@@ -68,7 +81,7 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
     val bleState by vm.bleState.collectAsState()
 
     val screen = when {
-        vm.isNavigationActive -> MotoScreen.ActiveNavigation
+        state.isNavigating -> MotoScreen.ActiveNavigation
         state.selected != null -> MotoScreen.RoutePreview
         else -> MotoScreen.Home
     }
@@ -78,26 +91,114 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
     var showPrivacy by remember { mutableStateOf(false) }
     var showMapDownloads by remember { mutableStateOf(false) }
 
-    when (screen) {
-        MotoScreen.Home -> HomeScreen(
-            vm,
-            onOpenDevice = { showDevice = true },
-            onOpenGateway = { showGateway = true },
-            onOpenPrivacy = { showPrivacy = true },
-            onOpenMapDownloads = { showMapDownloads = true },
-        )
-        MotoScreen.RoutePreview -> RoutePreviewScreen(
-            vm,
-            onOpenDevice = { showDevice = true },
-            onOpenMapDownloads = { showMapDownloads = true },
-        )
-        MotoScreen.ActiveNavigation -> ActiveNavigationScreen(vm, onOpenDevice = { showDevice = true })
+    Surface(color = IosGroupedBackground) {
+        when (screen) {
+            MotoScreen.Home -> HomeScreen(
+                vm,
+                onOpenDevice = { showDevice = true },
+                onOpenGateway = { showGateway = true },
+                onOpenPrivacy = { showPrivacy = true },
+                onOpenMapDownloads = { showMapDownloads = true },
+            )
+            MotoScreen.RoutePreview -> RoutePreviewScreen(
+                vm,
+                onOpenDevice = { showDevice = true },
+                onOpenMapDownloads = { showMapDownloads = true },
+            )
+            MotoScreen.ActiveNavigation -> ActiveNavigationScreen(
+                vm,
+                onOpenDevice = { showDevice = true },
+                onOpenMapDownloads = { showMapDownloads = true },
+            )
+        }
     }
 
-    if (showDevice) DeviceSheet(vm, bleState, onDismiss = { showDevice = false })
-    if (showGateway) GatewaySheet(vm, onDismiss = { showGateway = false })
-    if (showPrivacy) PrivacySheet(onDismiss = { showPrivacy = false })
+    if (showDevice) DeviceDetailsSheet(vm, bleState, onDismiss = { showDevice = false })
+    if (showGateway) GatewaySettingsSheet(vm, onDismiss = { showGateway = false })
+    if (showPrivacy) DataUseSheet(onDismiss = { showPrivacy = false })
     if (showMapDownloads) MapDownloadsSheet(vm, onDismiss = { showMapDownloads = false })
+}
+
+enum class MotoScreen { Home, RoutePreview, ActiveNavigation }
+
+// MARK: - Grouped-list building blocks (List + insetGrouped equivalents)
+
+@Composable
+private fun GroupedList(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Column(modifier.fillMaxSize().verticalScroll(rememberScrollState())) { content() }
+}
+
+@Composable
+private fun GroupSection(
+    header: String? = null,
+    footer: String? = null,
+    content: @Composable () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        if (!header.isNullOrEmpty()) {
+            Text(
+                header.uppercase(),
+                fontSize = 13.sp,
+                color = IosSecondary,
+                modifier = Modifier.padding(start = 16.dp, top = 18.dp, bottom = 7.dp),
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = IosCard,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column { content() }
+        }
+        if (!footer.isNullOrEmpty()) {
+            Text(
+                footer,
+                fontSize = 13.sp,
+                color = IosSecondary,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 7.dp, bottom = 4.dp),
+            )
+        } else {
+            Spacer(Modifier.height(18.dp))
+        }
+    }
+}
+
+@Composable
+private fun RowDivider() = Box(
+    Modifier
+        .padding(start = 16.dp)
+        .fillMaxWidth()
+        .height(0.5.dp)
+        .background(IosSeparator),
+)
+
+/** LabeledContent(statusRow) equivalent. */
+@Composable
+private fun StatusRow(title: String, icon: String, value: String, valueColor: Color) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Text(icon, fontSize = 16.sp)
+            Spacer(Modifier.width(8.dp))
+            Text(title, fontSize = 16.sp, color = Color(0xFF000000))
+        }
+        Text(value, fontSize = 16.sp, color = valueColor, textAlign = TextAlign.End)
+    }
+}
+
+@Composable
+private fun LabelFooter(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        fontSize = 13.sp,
+        color = IosSecondary,
+        modifier = modifier.padding(start = 16.dp, end = 16.dp, top = 7.dp, bottom = 4.dp),
+    )
 }
 
 // MARK: - 出发 (home)
@@ -112,168 +213,309 @@ private fun HomeScreen(
 ) {
     val state by vm.state.collectAsState()
     val recentPlaces by vm.recentPlaces.collectAsState()
-    val context = LocalContext.current
 
-    Column(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("出发", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-            Row {
-                TextButton(onClick = { vm.startDemo() }) { Text("演示") }
-                TextButton(onClick = onOpenDevice) { Text("圆屏") }
-            }
+    Column(Modifier.fillMaxSize()) {
+        // Navigation bar
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
+            Text(
+                "出发",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.align(Alignment.Center),
+            )
         }
 
-        if (!vm.gatewayCustomised()) {
-            Card(
-                Modifier.fillMaxWidth().clickable { onOpenGateway() },
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-            ) {
-                Column(Modifier.padding(14.dp)) {
-                    Text("设置导航网关", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "填写你部署的网关地址后，就可以搜索地点和规划路线。",
-                        style = MaterialTheme.typography.bodySmall,
+        GroupedList(Modifier.weight(1f)) {
+            if (!vm.gatewayCustomised()) {
+                GroupSection(
+                    footer = "填写你部署的网关地址后，就可以搜索地点和规划路线。",
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable { onOpenGateway() }
+                            .padding(horizontal = 16.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("🌐", fontSize = 16.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("设置导航网关", fontSize = 16.sp, color = IosBlue)
+                    }
+                }
+            }
+            GroupSection {
+                SearchField(
+                    query = state.query,
+                    onQuery = { vm.queryChanged(it) },
+                    onSubmit = { vm.submitSearch() },
+                    onClear = { vm.clearQuery() },
+                )
+            }
+            if (state.query.isNotEmpty()) {
+                GroupSection(header = "搜索结果") {
+                    when {
+                        state.isSearching -> Row(
+                            Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Text("正在搜索…", fontSize = 16.sp, color = IosSecondary)
+                        }
+
+                        state.places.isNotEmpty() -> Column {
+                            state.places.forEachIndexed { index, place ->
+                                if (index > 0) RowDivider()
+                                PlaceRow(place, symbol = "📍", tint = IosBlue) { vm.select(place) }
+                            }
+                        }
+
+                        else -> EmptyState(
+                            title = if (state.searchFailure == null) "输入地点名称" else "暂无结果",
+                            icon = "🔍",
+                            description = state.searchFailure ?: "至少输入两个字，例如“奥体中心”。",
+                            action = if (state.searchFailure != null) {
+                                { vm.submitSearch() }
+                            } else null,
+                            actionLabel = "重新搜索",
+                        )
+                    }
+                }
+                LabelFooter(
+                    when {
+                        state.hasFix -> "已按当前位置优先排序"
+                        state.searchFailure != null -> "未获定位权限；暂按全国搜索"
+                        else -> "正在获取当前位置；暂按全国搜索"
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            } else {
+                if (recentPlaces.isEmpty()) {
+                    EmptyState(
+                        title = "选择目的地",
+                        icon = "🗺",
+                        description = "搜索地点或地址，选好路线就出发。",
                     )
+                    Spacer(Modifier.height(12.dp))
+                } else {
+                    GroupSection(header = "最近搜索") {
+                        recentPlaces.forEachIndexed { index, place ->
+                            if (index > 0) RowDivider()
+                            RecentRow(place) { vm.selectRecent(place) }
+                        }
+                    }
+                }
+                GroupSection(footer = "连接圆屏后，导航指引会自动同步。") {
+                    DeviceSummaryRow(vm) { onOpenDevice() }
+                    RowDivider()
+                    MapDownloadsRow { onOpenMapDownloads() }
+                    RowDivider()
+                    Row(
+                        Modifier.fillMaxWidth().clickable { vm.startDemo() }.padding(horizontal = 16.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("▶️", fontSize = 20.sp)
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("演示导航", fontSize = 16.sp, color = Color(0xFF000000))
+                            Text("先体验一次导航流程", fontSize = 13.sp, color = IosSecondary)
+                        }
+                    }
+                }
+                GroupSection {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onOpenGateway() }
+                            .padding(horizontal = 16.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("🌐", fontSize = 16.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("网关设置", fontSize = 16.sp, color = Color(0xFF000000))
+                    }
+                    RowDivider()
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onOpenPrivacy() }
+                            .padding(horizontal = 16.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("✋", fontSize = 16.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("隐私与数据", fontSize = 16.sp, color = Color(0xFF000000))
+                    }
                 }
             }
         }
+    }
+}
 
-        OutlinedTextField(
-            value = state.query,
-            onValueChange = { vm.queryChanged(it) },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("搜索地点或地址") },
+@Composable
+private fun SearchField(
+    query: String,
+    onQuery: (String) -> Unit,
+    onSubmit: () -> Unit,
+    onClear: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("🔍", fontSize = 16.sp, color = IosSecondary)
+        androidx.compose.foundation.text.BasicTextField(
+            value = query,
+            onValueChange = onQuery,
+            modifier = Modifier.weight(1f),
             singleLine = true,
-            trailingIcon = {
-                if (state.query.isNotEmpty()) {
-                    TextButton(onClick = { vm.clearQuery() }) { Text("清除") }
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, color = Color(0xFF000000)),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                imeAction = androidx.compose.ui.text.input.ImeAction.Search,
+            ),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSubmit() }),
+            decorationBox = { inner ->
+                Box {
+                    if (query.isEmpty()) {
+                        Text("搜索地点或地址", fontSize = 16.sp, color = IosSecondary)
+                    }
+                    inner()
                 }
             },
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { vm.submitSearch() }, enabled = state.query.trim().length >= 2) {
-                Text("搜索")
-            }
+        if (query.isNotEmpty()) {
+            Text(
+                "✕",
+                fontSize = 15.sp,
+                color = IosSecondary,
+                modifier = Modifier
+                    .clickable { onClear() }
+                    .padding(8.dp),
+            )
         }
+    }
+}
 
-        when {
-            state.isSearching -> Row(
-                Modifier.fillMaxWidth().padding(8.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CircularProgressIndicator(Modifier.size(20.dp))
-                Text("正在搜索…", color = MaterialTheme.colorScheme.secondary)
-            }
-
-            state.places.isNotEmpty() -> LazyColumn(Modifier.weight(1f, fill = false)) {
-                items(state.places) { place ->
-                    PlaceRow(place, symbol = "📍") { vm.select(place) }
-                }
-            }
-
-            else -> Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (recentPlaces.isEmpty()) {
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("选择目的地", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-                            Text(
-                                "搜索地点或地址，选好路线就出发。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                            )
-                        }
-                    }
-                } else {
-                    Text("最近搜索", style = MaterialTheme.typography.titleSmall)
-                    recentPlaces.forEach { place ->
-                        PlaceRowSaved(place) { vm.selectRecent(place) }
-                    }
-                    TextButton(onClick = { vm.clearRecent() }) { Text("清空最近搜索") }
-                }
-            }
-        }
-
-        Spacer(Modifier.weight(0.01f))
-        HorizontalDivider()
-        SecondaryLink("地图与离线下载", "自动加载周边，也能提前保存城市和沿途地图") {
-            onOpenMapDownloads()
-        }
-        HorizontalDivider()
-        SecondaryLink("网关设置", if (vm.gatewayCustomised()) vm.gatewayCurrent() else "使用默认网关") {
-            onOpenGateway()
-        }
-        SecondaryLink("隐私与数据", "位置、蓝牙与存储的说明") {
-            onOpenPrivacy()
-        }
+@Composable
+private fun EmptyState(
+    title: String,
+    icon: String,
+    description: String,
+    action: (() -> Unit)? = null,
+    actionLabel: String = "",
+) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(icon, fontSize = 34.sp)
+        Text(title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
         Text(
-            "连接圆屏后，导航指引会自动同步。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.secondary,
+            description,
+            fontSize = 13.sp,
+            color = IosSecondary,
+            textAlign = TextAlign.Center,
         )
-    }
-}
-
-@Composable
-private fun PlaceRow(place: Place, symbol: String, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(vertical = 3.dp).clickable(onClick = onClick)) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(symbol, fontSize = 20.sp)
-            Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                Text(place.name, fontWeight = FontWeight.Medium)
-                Text(
-                    placeSubtitle(place.displayArea, place.city, place.district, place.address, place.distanceM),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-            }
-            Text("›", color = MaterialTheme.colorScheme.secondary)
+        if (action != null) {
+            TextButton(onClick = action) { Text(actionLabel) }
         }
     }
 }
 
 @Composable
-private fun PlaceRowSaved(place: dev.glimpse.motogps.nav.SavedPlace, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(vertical = 3.dp).clickable(onClick = onClick)) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("🕘", fontSize = 18.sp)
-            Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                Text(place.name, fontWeight = FontWeight.Medium)
-                Text(
-                    place.subtitle(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-            }
-            Text("›", color = MaterialTheme.colorScheme.secondary)
+private fun PlaceRow(place: Place, symbol: String, tint: Color, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(symbol, fontSize = 19.sp, color = tint, modifier = Modifier.width(28.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(place.name, fontSize = 16.sp, color = Color(0xFF000000))
+            Text(
+                placeSubtitle(place),
+                fontSize = 13.sp,
+                color = IosSecondary,
+                maxLines = 2,
+            )
         }
+        Text("›", fontSize = 14.sp, color = IosSecondary.copy(alpha = 0.6f))
     }
 }
 
-private fun placeSubtitle(
-    displayArea: String,
-    city: String,
-    district: String,
-    address: String,
-    distanceM: Double?,
-): String {
-    val area = displayArea.ifEmpty {
-        listOf(city, district).filter { it.isNotEmpty() }.joinToString(" · ")
+@Composable
+private fun RecentRow(place: SavedPlace, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("🕘", fontSize = 19.sp, color = IosSecondary, modifier = Modifier.width(28.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(place.name, fontSize = 16.sp, color = Color(0xFF000000))
+            Text(place.subtitle(), fontSize = 13.sp, color = IosSecondary, maxLines = 2)
+        }
+        Text("›", fontSize = 14.sp, color = IosSecondary.copy(alpha = 0.6f))
+    }
+}
+
+private fun placeSubtitle(place: Place): String {
+    val area = place.displayArea.ifEmpty {
+        listOf(place.city, place.district).filter { it.isNotEmpty() }.joinToString(" · ")
     }
     val parts = mutableListOf<String>()
     if (area.isNotEmpty()) parts += area
-    if (address.isNotEmpty()) parts += address
-    if (distanceM != null && distanceM >= 0) {
-        parts += if (distanceM >= 1_000) {
-            "距你 %.1f km".format(java.util.Locale.US, distanceM / 1_000)
+    if (place.address.isNotEmpty()) parts += place.address
+    place.distanceM?.takeIf { it >= 0 }?.let { distance ->
+        parts += if (distance >= 1_000) {
+            String.format(java.util.Locale.US, "距你 %.1f km", distance / 1_000)
         } else {
-            "距你 ${distanceM.toInt()} m"
+            "距你 ${distance.toInt()} m"
         }
     }
     return parts.joinToString(" · ").ifEmpty { "查看路线" }
+}
+
+@Composable
+private fun DeviceSummaryRow(vm: NavViewModel, onClick: () -> Unit) {
+    val bleState by vm.bleState.collectAsState()
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("◎", fontSize = 19.sp, color = IosBlue, modifier = Modifier.width(24.dp))
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("我的圆屏", fontSize = 16.sp, color = Color(0xFF000000))
+            Text(deviceStatus(bleState), fontSize = 13.sp, color = IosSecondary)
+        }
+        if (bleState is Esp32BleCentral.State.Connected) {
+            Text("✓", fontSize = 17.sp, color = IosGreen)
+            Spacer(Modifier.width(6.dp))
+        }
+        Text("›", fontSize = 14.sp, color = IosSecondary.copy(alpha = 0.6f))
+    }
+}
+
+@Composable
+private fun MapDownloadsRow(onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("🗺", fontSize = 20.sp, color = IosBlue)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("地图与离线下载", fontSize = 16.sp, color = Color(0xFF000000))
+            Text("自动加载周边，也能提前保存城市和沿途地图", fontSize = 13.sp, color = IosSecondary)
+        }
+    }
+}
+
+private fun deviceStatus(state: Esp32BleCentral.State): String = when (state) {
+    is Esp32BleCentral.State.Connected -> "已连接"
+    is Esp32BleCentral.State.Scanning -> "正在寻找圆屏"
+    is Esp32BleCentral.State.Connecting -> "正在连接"
+    is Esp32BleCentral.State.Handshaking -> "正在连接"
+    is Esp32BleCentral.State.Failed -> "连接未成功"
+    is Esp32BleCentral.State.Unavailable -> "蓝牙不可用"
+    is Esp32BleCentral.State.Reconnecting -> "正在连接"
+    else -> "未连接"
 }
 
 // MARK: - 路线 (route preview)
@@ -287,429 +529,511 @@ private fun RoutePreviewScreen(
     val state by vm.state.collectAsState()
     val place = state.selected
 
-    Column(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("路线", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            TextButton(onClick = { vm.clearQuery() }) { Text("更换") }
-        }
-
-        place?.let { p ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("📍", fontSize = 18.sp)
-                Column(Modifier.padding(start = 8.dp)) {
-                    Text(p.name, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        placeSubtitle(p.displayArea, p.city, p.district, p.address, p.distanceM),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                    )
-                }
-            }
+    Column(Modifier.fillMaxSize()) {
+        // Inline navigation bar with a trailing 更换 button.
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
             Text(
-                "从我的位置出发",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
+                "路线",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.align(Alignment.Center),
             )
+            TextButton(
+                onClick = { vm.clearDestination() },
+                modifier = Modifier.align(Alignment.CenterEnd),
+            ) { Text("更换", color = IosBlue) }
         }
 
-        val previewFailure = state.routePreviewFailure
-        when {
-            state.optionsLoading -> Row(
-                Modifier.fillMaxWidth().padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CircularProgressIndicator(Modifier.size(20.dp))
-                Column {
-                    Text("正在规划路线")
-                    Text(
-                        "获取当前位置与路况…",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                    )
+        GroupedList(Modifier.weight(1f)) {
+            place?.let { p ->
+                GroupSection(header = "从我的位置出发") {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("📍", fontSize = 22.sp, color = IosRed)
+                        Spacer(Modifier.width(12.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(p.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                            Text(placeSubtitle(p), fontSize = 13.sp, color = IosSecondary)
+                        }
+                    }
                 }
-            }
 
-            state.routeOptions.isNotEmpty() -> {
-                Text("选择路线", style = MaterialTheme.typography.titleSmall)
-                state.routeOptions.forEachIndexed { index, route ->
-                    RouteOptionRow(
-                        index = index,
-                        title = RouteCandidate.fromRoutes(state.routeOptions)[index].title,
-                        distanceText = RideFormatting.distance(route.totalDistanceM),
-                        durationText = RideFormatting.duration(route.totalDurationS.toInt()),
-                        traffic = RouteCandidate.fromRoutes(state.routeOptions)[index].trafficSummary,
-                        selected = index == state.chosenOptionIndex,
-                        onClick = { vm.selectOption(index) },
-                    )
+                val candidates = RouteCandidate.fromRoutes(state.routeOptions)
+                val selectedId = candidates.getOrNull(state.chosenOptionIndex)?.id
+                when {
+                    state.optionsLoading -> GroupSection {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Column {
+                                Text("正在规划路线", fontSize = 16.sp)
+                                Text("获取当前位置与路况…", fontSize = 13.sp, color = IosSecondary)
+                            }
+                        }
+                    }
+
+                    candidates.isNotEmpty() -> {
+                        GroupSection {
+                            RouteOverviewMap(
+                                candidates = candidates,
+                                selectedId = selectedId,
+                                origin = vm.routePreviewOrigin,
+                                destination = p.longitude to p.latitude,
+                                modifier = Modifier.fillMaxWidth().height(270.dp),
+                            )
+                        }
+                        GroupSection(
+                            header = "选择路线",
+                            footer = "高德驾车路线 · 预计时间会随路况变化",
+                        ) {
+                            candidates.forEachIndexed { index, candidate ->
+                                if (index > 0) RowDivider()
+                                RouteOptionRow(
+                                    candidate = candidate,
+                                    selected = index == state.chosenOptionIndex,
+                                    onClick = { vm.selectOption(index) },
+                                )
+                            }
+                        }
+                        GroupSection { MapDownloadsRow(onOpenMapDownloads) }
+                    }
+
+                    state.routePreviewFailure != null -> GroupSection {
+                        val failureText = state.routePreviewFailure ?: ""
+                        EmptyState(
+                            title = "无法规划路线",
+                            icon = "⚠️",
+                            description = failureText,
+                        )
+                    }
                 }
-                Text(
-                    "高德驾车路线 · 预计时间会随路况变化",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-                SecondaryLink("地图与离线下载", "保存城市和沿途地图") { onOpenMapDownloads() }
-            }
-
-            previewFailure != null -> Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("无法规划路线", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        previewFailure,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                    )
-                    Button(onClick = { vm.planRoutePreview() }) { Text("重试") }
-                }
-            }
-        }
-
-        Spacer(Modifier.weight(1f))
-        PrimaryActionBar(
-            title = when {
-                state.optionsLoading -> "正在规划路线"
-                state.routeOptions.isEmpty() -> "重新规划路线"
-                else -> "开始导航"
-            },
-            enabled = !state.optionsLoading && state.routeOptions.isNotEmpty(),
-            danger = false,
-            loading = state.optionsLoading,
-            onClick = { vm.start() },
-        )
-    }
-}
-
-@Composable
-private fun RouteOptionRow(
-    index: Int,
-    title: String,
-    distanceText: String,
-    durationText: String,
-    traffic: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Card(
-        Modifier.fillMaxWidth().clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant,
-        ),
-    ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(
-                    title,
-                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
-                )
-                Text(durationText, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text(distanceText, style = MaterialTheme.typography.bodySmall)
-                Text(
-                    "🚗 $traffic",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = when (traffic) {
-                        "拥堵较多" -> Color(0xFFC62828)
-                        "部分路段缓行" -> Color(0xFFEF6C00)
-                        "路况顺畅" -> Color(0xFF2E7D32)
-                        else -> MaterialTheme.colorScheme.secondary
-                    },
-                )
-            }
-            Text(
-                if (selected) "✓" else "○",
-                fontSize = 22.sp,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
-            )
-        }
-    }
-}
-
-// MARK: - 导航中 (ride)
-
-@Composable
-private fun ActiveNavigationScreen(vm: NavViewModel, onOpenDevice: () -> Unit) {
-    val state by vm.state.collectAsState()
-    val hasEstimate = state.remainingM > 0 || state.remainingS > 0
-
-    Column(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(
-                if (false) "演示导航" else "导航中",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            TextButton(onClick = onOpenDevice) { Text("圆屏") }
-        }
-
-        Card(Modifier.fillMaxWidth()) {
-            Column(
-                Modifier.fillMaxWidth().padding(18.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Box(
-                    Modifier.size(72.dp).background(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-                        CircleShape,
-                    ),
-                    contentAlignment = Alignment.Center,
-                ) { Text("➤", fontSize = 30.sp, color = MaterialTheme.colorScheme.primary) }
-                Text(
-                    navigationTitle(state.engineState, false),
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    navigationDetail(state, vm),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🏁", fontSize = 18.sp)
-            Column(Modifier.padding(start = 8.dp)) {
-                Text(
-                    if (false) "演示目的地" else "目的地",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-                Text(
-                    state.selected?.name ?: "目的地",
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        }
-
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            RideMetric("剩余时间", if (hasEstimate) RideFormatting.duration(state.remainingS) else "—")
-            RideMetric("剩余路程", if (hasEstimate) RideFormatting.distance(state.remainingM) else "—")
-        }
-
-        if (state.instruction.isNotBlank()) {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("当前指引", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary)
-                    Text(state.instruction, fontWeight = FontWeight.Medium)
-                    if (state.roadName.isNotBlank()) {
+                state.navigationFailure?.let { failure ->
+                    GroupSection {
                         Text(
-                            "${state.roadName} · ${state.distanceToManeuverM.toInt()} m",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
+                            "⚠️ $failure",
+                            fontSize = 13.sp,
+                            color = IosSecondary,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         )
                     }
                 }
             }
         }
 
-        Text("导航状态", style = MaterialTheme.typography.titleSmall)
-        StatusRow(
-            "我的圆屏",
-            if (state.bleReady) "已连接" else "未连接",
-            if (state.bleReady) Color(0xFF2E7D32) else MaterialTheme.colorScheme.secondary,
-        )
-        StatusRow(
-            "手机定位",
-            if (false) "演示位置" else if (state.hasFix) "已获取" else "获取中",
-            if (state.hasFix || false) Color(0xFF2E7D32) else MaterialTheme.colorScheme.secondary,
-        )
-
-        if (false) {
-            Text(
-                "演示中的位置与行驶过程为模拟数据。道路数据 © OpenStreetMap contributors",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-        }
-
         Spacer(Modifier.weight(1f))
-        PrimaryActionBar(
-            title = "结束导航",
-            enabled = true,
-            danger = true,
-            loading = false,
-            onClick = { vm.stop() },
-        )
+        NavigationActionBar(vm, state)
     }
 }
 
 @Composable
-private fun androidx.compose.foundation.layout.RowScope.RideMetric(title: String, value: String) {
-    Column(Modifier.weight(1f)) {
-        Text(value, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-        Text(title, style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.secondary)
-    }
-}
-
-private fun navigationTitle(engineState: Int, demo: Boolean): String = when (engineState) {
-    1 -> "正在获取位置"
-    2 -> "正在规划路线"
-    3 -> if (demo) "正在演示" else "正在导航"
-    4 -> "正在重新规划"
-    5 -> "已到达目的地"
-    else -> "准备出发"
-}
-
-private fun navigationDetail(state: NavigationSession.UiState, vm: NavViewModel): String = when {
-    false && state.engineState == 3 ->
-        "预览行驶过程与圆屏上的导航指引。"
-    state.engineState == 3 ->
-        if (state.bleReady) "圆屏已连接，手机可锁屏收好。"
-        else "圆屏连接后，导航指引会自动同步。"
-    state.engineState == 4 -> "新路线生成后会自动同步到圆屏"
-    state.engineState == 5 -> "本次导航已经完成"
-    state.engineState == 2 -> "正在读取高德实时路线与路况"
-    state.engineState == 1 -> "请保持精确定位开启"
-    else -> "选择终点后，路线会通过蓝牙发送到圆屏"
-}
-
-// MARK: - Shared pieces
-
-@Composable
-private fun PrimaryActionBar(
-    title: String,
-    enabled: Boolean,
-    danger: Boolean,
-    loading: Boolean,
-    onClick: () -> Unit,
-) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-        ),
-    ) {
-        if (loading) {
-            CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-            Spacer(Modifier.size(8.dp))
-        }
-        Text(title, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable
-private fun SecondaryLink(title: String, subtitle: String, onClick: () -> Unit) {
+private fun RouteOptionRow(candidate: RouteCandidate, selected: Boolean, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.Medium)
-            if (subtitle.isNotEmpty()) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(
+                candidate.title,
+                fontSize = 15.sp,
+                color = if (selected) IosBlue else IosSecondary,
+            )
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
+                    candidate.durationText,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF000000),
+                )
+                Text(candidate.distanceText, fontSize = 13.sp, color = IosSecondary)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("🚗", fontSize = 13.sp)
+                Text(
+                    candidate.trafficSummary,
+                    fontSize = 13.sp,
+                    color = when (candidate.trafficSummary) {
+                        "拥堵较多" -> IosRed
+                        "部分路段缓行" -> IosOrange
+                        "路况顺畅" -> IosGreen
+                        else -> IosSecondary
+                    },
                 )
             }
         }
-        Text("›", color = MaterialTheme.colorScheme.secondary)
+        Text(
+            if (selected) "✓" else "○",
+            fontSize = 22.sp,
+            color = if (selected) IosBlue else IosSecondary.copy(alpha = 0.45f),
+        )
     }
 }
 
-@Composable
-private fun StatusRow(title: String, value: String, valueColor: Color) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(title)
-        Text(value, color = valueColor)
-    }
-}
+// MARK: - 导航中 (ride)
 
-// MARK: - Sheets
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DeviceSheet(vm: NavViewModel, bleState: Esp32BleCentral.State, onDismiss: () -> Unit) {
-    val devices by vm.devices.collectAsState()
-    val context = LocalContext.current
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("我的圆屏", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+private fun ActiveNavigationScreen(
+    vm: NavViewModel,
+    onOpenDevice: () -> Unit,
+    onOpenMapDownloads: () -> Unit,
+) {
+    val state by vm.state.collectAsState()
+    val hasEstimate = state.remainingM > 0 || state.remainingS > 0
+
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxWidth().height(52.dp)) {
             Text(
-                when (bleState) {
-                    is Esp32BleCentral.State.Connected -> "已连接"
-                    is Esp32BleCentral.State.Scanning -> "正在寻找圆屏"
-                    is Esp32BleCentral.State.Connecting -> "正在连接"
-                    is Esp32BleCentral.State.Failed -> "连接未成功"
-                    is Esp32BleCentral.State.Unavailable -> "蓝牙不可用"
-                    is Esp32BleCentral.State.Reconnecting -> "正在重连"
-                    else -> "未连接"
-                },
-                color = MaterialTheme.colorScheme.secondary,
+                "导航中",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.align(Alignment.Center),
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { vm.startScan() }) { Text("扫描") }
-                OutlinedButton(onClick = { vm.disconnect() }) { Text("断开") }
-                OutlinedButton(onClick = {
-                    runCatching {
-                        context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+        }
+
+        GroupedList(Modifier.weight(1f)) {
+            GroupSection {
+                Column(
+                    Modifier.fillMaxWidth().padding(vertical = 18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Box(
+                        Modifier.size(76.dp).background(IosBlue.copy(alpha = 0.08f), androidx.compose.foundation.shape.CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(navigationSymbol(state), fontSize = 34.sp, color = if (state.navigationFailure == null) IosBlue else IosOrange)
                     }
-                }) { Text("蓝牙设置") }
+                    Text(
+                        navigationTitle(state),
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        navigationDetail(state),
+                        fontSize = 13.sp,
+                        color = IosSecondary,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
-            LazyColumn(Modifier.weight(1f, fill = false)) {
-                items(devices) { device ->
-                    Card(Modifier.fillMaxWidth().clickable { vm.connect(device.address) }) {
-                        Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column {
-                                Text(device.name ?: "(未命名)")
-                                Text(device.address, style = MaterialTheme.typography.bodySmall)
-                            }
-                            Text("${device.rssi} dBm", style = MaterialTheme.typography.bodySmall)
+            GroupSection {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("🏁", fontSize = 20.sp, color = IosBlue)
+                    Spacer(Modifier.width(12.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("目的地", fontSize = 13.sp, color = IosSecondary)
+                        Text(state.selected?.name ?: "目的地", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                RowDivider()
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    RideMetric("剩余时间", if (hasEstimate) RideFormatting.duration(state.remainingS) else "—", Modifier.weight(1f))
+                    Spacer(Modifier.width(24.dp))
+                    RideMetric("剩余路程", if (hasEstimate) RideFormatting.distance(state.remainingM) else "—", Modifier.weight(1f))
+                }
+            }
+            GroupSection(header = "导航状态") {
+                DeviceSummaryRow(vm) { onOpenDevice() }
+                RowDivider()
+                StatusRow(
+                    "手机定位", "📍",
+                    if (state.hasFix) "已获取" else "获取中",
+                    if (state.hasFix) IosGreen else IosSecondary,
+                )
+                RowDivider()
+                StatusRow(
+                    "路况", "🚗",
+                    if (state.remainingS > 0) "在线" else "离线",
+                    IosSecondary,
+                )
+                RowDivider()
+                Row(
+                    Modifier.fillMaxWidth().clickable { onOpenMapDownloads() }
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                ) {
+                    Text("管理离线地图", fontSize = 16.sp, color = IosBlue)
+                }
+            }
+            if (state.instruction.isNotBlank()) {
+                GroupSection {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("当前指引", fontSize = 13.sp, color = IosSecondary)
+                        Text(state.instruction, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        if (state.roadName.isNotBlank()) {
+                            Text(
+                                "${state.roadName} · ${state.distanceToManeuverM.toInt()} m",
+                                fontSize = 13.sp,
+                                color = IosSecondary,
+                            )
                         }
                     }
                 }
             }
-            TextButton(onClick = onDismiss) { Text("完成") }
-            Spacer(Modifier.height(12.dp))
+        }
+
+        Spacer(Modifier.weight(1f))
+        NavigationActionBar(vm, state)
+    }
+}
+
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.RideMetric(title: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(value, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF000000))
+        Text(title, fontSize = 13.sp, color = IosSecondary)
+    }
+}
+
+// MARK: - Primary action bar (safeAreaInset bottom)
+
+@Composable
+private fun NavigationActionBar(vm: NavViewModel, state: NavigationSession.UiState) {
+    val active = state.isNavigating
+    val title = when {
+        active -> "结束导航"
+        state.optionsLoading -> "正在规划路线"
+        state.selected == null -> "请先选择终点"
+        state.routeOptions.isEmpty() -> "重新规划路线"
+        else -> "开始导航"
+    }
+    val loading = !active && state.optionsLoading
+    val enabled = active || (state.selected != null && !state.optionsLoading && state.routeOptions.isNotEmpty())
+
+    Surface(color = Color(0xF7F2F2F7), shadowElevation = 8.dp) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+            Button(
+                onClick = { if (active) vm.stop() else vm.start() },
+                enabled = enabled,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (active) IosRed else IosBlue,
+                    disabledContainerColor = IosBlue.copy(alpha = 0.3f),
+                ),
+            ) {
+                if (loading) {
+                    CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(9.dp))
+                }
+                Text(
+                    if (active) "■ " else "➤ ",
+                    fontSize = 16.sp,
+                )
+                Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }
 
+private fun navigationTitle(state: NavigationSession.UiState): String {
+    if (state.navigationFailure != null) return "导航需要处理"
+    return when (state.engineState) {
+        1 -> "正在获取位置"
+        2 -> "正在规划路线"
+        3 -> "正在导航"
+        4 -> "正在重新规划"
+        5 -> "已到达目的地"
+        else -> "准备出发"
+    }
+}
+
+private fun navigationDetail(state: NavigationSession.UiState): String {
+    state.navigationFailure?.let { return it }
+    return when (state.engineState) {
+        3 -> if (state.bleReady) "圆屏已连接，手机可锁屏收好。" else "圆屏连接后，导航指引会自动同步。"
+        4 -> "新路线生成后会自动同步到圆屏"
+        5 -> "本次导航已经完成"
+        2 -> "正在读取高德实时路线与路况"
+        1 -> "请保持精确定位开启"
+        else -> "选择终点后，路线会通过蓝牙发送到圆屏"
+    }
+}
+
+private fun navigationSymbol(state: NavigationSession.UiState): String = when {
+    state.navigationFailure != null -> "⚠️"
+    state.engineState == 5 -> "🏁"
+    state.engineState == 4 -> "🔄"
+    state.engineState == 3 -> "🧭"
+    else -> "📍"
+}
+
+// MARK: - Device details sheet (iOS deviceDetails)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun GatewaySheet(vm: NavViewModel, onDismiss: () -> Unit) {
-    val current = remember { vm.gatewayCurrent() }
-    var address by remember { mutableStateOf(current) }
+private fun DeviceDetailsSheet(vm: NavViewModel, bleState: Esp32BleCentral.State, onDismiss: () -> Unit) {
+    val devices by vm.devices.collectAsState()
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            Box(Modifier.fillMaxWidth().height(48.dp)) {
+                Text(
+                    "我的圆屏",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                ) { Text("完成", color = IosBlue) }
+            }
+
+            GroupSection { }
+            GroupSection {
+                Column(
+                    Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("🧭", fontSize = 60.sp, color = IosBlue)
+                    val name = when (bleState) {
+                        is Esp32BleCentral.State.Connected -> "MOTO GPS"
+                        is Esp32BleCentral.State.Connecting -> "MOTO GPS"
+                        else -> "MOTO GPS"
+                    }
+                    Text(name, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        deviceDetail(bleState),
+                        fontSize = 13.sp,
+                        color = IosSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 32.dp),
+                    )
+                }
+            }
+            GroupSection(footer = "圆屏保持开机并靠近手机。连接成功后，当前导航会自动同步。") {
+                StatusRow(
+                    "连接状态", "📡",
+                    deviceStatus(bleState),
+                    if (bleState is Esp32BleCentral.State.Connected) IosGreen else IosSecondary,
+                )
+                RowDivider()
+                val connected = bleState is Esp32BleCentral.State.Connected
+                val scanning = bleState is Esp32BleCentral.State.Scanning
+                val context = LocalContext.current
+                Row(
+                    Modifier.fillMaxWidth().clickable {
+                        when {
+                            connected -> vm.disconnect()
+                            scanning -> vm.stopScan()
+                            else -> vm.startScan()
+                        }
+                    }.padding(horizontal = 16.dp, vertical = 11.dp),
+                ) {
+                    Text(
+                        when {
+                            connected -> "断开连接"
+                            scanning -> "停止搜索"
+                            bleState is Esp32BleCentral.State.Connecting -> "取消连接"
+                            bleState is Esp32BleCentral.State.Failed -> "重新连接"
+                            else -> "连接圆屏"
+                        },
+                        fontSize = 16.sp,
+                        color = IosBlue,
+                    )
+                }
+                if (bleState is Esp32BleCentral.State.Unavailable) {
+                    RowDivider()
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+                        }.padding(horizontal = 16.dp, vertical = 11.dp),
+                    ) { Text("打开系统设置", fontSize = 16.sp, color = IosBlue) }
+                }
+                // Discovered devices (Android-specific affordance, kept minimal).
+                if (devices.isNotEmpty() && !connected) {
+                    devices.forEach { device ->
+                        RowDivider()
+                        Row(
+                            Modifier.fillMaxWidth().clickable { vm.connect(device.address) }
+                                .padding(horizontal = 16.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(device.name ?: "(未命名)", fontSize = 15.sp)
+                                Text(device.address, fontSize = 12.sp, color = IosSecondary)
+                            }
+                            Text("${device.rssi} dBm", fontSize = 12.sp, color = IosSecondary)
+                        }
+                    }
+                }
+            }
+            GroupSection(header = "定位") {
+                StatusRow("搜索位置", "📍", "已获取", IosSecondary)
+            }
+        }
+    }
+}
+
+private fun deviceDetail(state: Esp32BleCentral.State): String = when (state) {
+    is Esp32BleCentral.State.Connected ->
+        "圆屏已就绪，可以接收导航指引。"
+    is Esp32BleCentral.State.Failed ->
+        "暂时无法连接。请确认圆屏已开机并靠近手机，再试一次。"
+    is Esp32BleCentral.State.Unavailable ->
+        "请开启手机蓝牙，并允许 MOTO GPS 使用蓝牙。"
+    is Esp32BleCentral.State.Scanning, is Esp32BleCentral.State.Connecting, is Esp32BleCentral.State.Handshaking ->
+        "请将已开机的圆屏放在手机附近。"
+    is Esp32BleCentral.State.Reconnecting ->
+        "正在重新连接圆屏。"
+    else -> "连接你的圆屏，在车把上查看导航。"
+}
+
+// MARK: - Gateway settings sheet (iOS GatewaySettingsView)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GatewaySettingsSheet(vm: NavViewModel, onDismiss: () -> Unit) {
+    var address by remember { mutableStateOf(vm.gatewayCurrent()) }
     var message by remember { mutableStateOf<String?>(null) }
     var checking by remember { mutableStateOf(false) }
-    val context = LocalContext.current
+    val navigationActive = vm.isNavigationActive
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("网关设置", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            OutlinedTextField(
-                value = address,
-                onValueChange = { address = it; message = null },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("https://你的网关地址/") },
-                singleLine = true,
-            )
-            Text(
-                "填写完整的 HTTPS 根地址，不要填高德 Key。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    enabled = address.isNotBlank() && !checking,
-                    onClick = {
+    ModalBottomSheet(onDismissRequest = { if (!checking) onDismiss() }) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            Box(Modifier.fillMaxWidth().height(48.dp)) {
+                Text(
+                    "网关设置",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                Row(Modifier.align(Alignment.CenterEnd)) {
+                    TextButton(onClick = onDismiss, enabled = !checking) { Text("取消", color = IosSecondary) }
+                    TextButton(
+                        enabled = !navigationActive && !checking && address.isNotBlank(),
+                        onClick = {
+                            checking = false
+                            runCatching { vm.gatewaySave(address) }
+                                .onSuccess { onDismiss() }
+                                .onFailure { message = it.message }
+                        },
+                    ) { Text("保存", color = IosBlue) }
+                }
+            }
+
+            GroupSection(header = "网关地址", footer = "填写完整的 HTTPS 根地址。例如 https://nav.example.com/moto-gps/api/，不要填高德 Key。") {
+                OutlinedTextField(
+                    value = address,
+                    onValueChange = { address = it; message = null },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    placeholder = { Text("https://你的网关地址/") },
+                    singleLine = true,
+                    enabled = !checking,
+                )
+            }
+            GroupSection(footer = "连接测试只检查网关状态；真实搜索、导航和地图还需要相应服务可用。") {
+                Row(
+                    Modifier.fillMaxWidth().clickable(enabled = !checking && address.isNotBlank()) {
                         checking = true
                         message = null
-                        // healthz probe with the candidate URL.
                         Thread {
                             val result = runCatching {
                                 val normalized = vm.gatewaySave(address)
@@ -734,88 +1058,165 @@ private fun GatewaySheet(vm: NavViewModel, onDismiss: () -> Unit) {
                             message = result
                             checking = false
                         }.start()
-                    },
-                ) { Text("测试连接") }
-                Button(
-                    enabled = address.isNotBlank(),
-                    onClick = {
-                        runCatching { vm.gatewaySave(address) }
-                            .onSuccess {
-                                android.widget.Toast.makeText(
-                                    context, "已保存，立即生效", android.widget.Toast.LENGTH_SHORT,
-                                ).show()
-                                onDismiss()
-                            }
-                            .onFailure { message = it.message }
-                    },
-                ) { Text("保存") }
+                    }.padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("测试连接", fontSize = 16.sp, color = IosBlue)
+                    if (checking) {
+                        Spacer(Modifier.weight(1f))
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    }
+                }
+                message?.let {
+                    RowDivider()
+                    Text(
+                        it,
+                        fontSize = 15.sp,
+                        color = IosSecondary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
             }
-            message?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
-            Text(
-                "保存后立即生效，无需重新安装。地点、路线和定位请求将发送到这个地址，请使用你信任的网关。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-            TextButton(onClick = onDismiss) { Text("完成") }
-            Spacer(Modifier.height(12.dp))
+            GroupSection {
+                Text(
+                    "保存后立即生效，无需重新安装。更换地址会清空当前搜索并暂停地图下载，已下载的地图仍会保留。",
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+                Text(
+                    "地点、路线和定位请求将发送到这个地址，请使用你信任的网关。",
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+            if (navigationActive) {
+                GroupSection {
+                    Text(
+                        "请先结束导航，再更换网关地址。",
+                        fontSize = 15.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+            }
         }
     }
 }
+
+// MARK: - Data use sheet (iOS DataUseView)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PrivacySheet(onDismiss: () -> Unit) {
+private fun DataUseSheet(onDismiss: () -> Unit) {
+    val context = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text("隐私与数据", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            PrivacySection("位置与路线", listOf(
-                "地点搜索、规划和重新规划路线时，搜索内容、起终点及所需位置会发送给配置的导航服务。",
-                "导航期间，定位用于更新路线和圆屏指引；锁屏或切换应用后仍可继续。结束导航会停止导航定位。",
-            ))
-            PrivacySection("蓝牙与音乐", listOf(
-                "连接圆屏后，导航、速度及周边地图通过蓝牙同步。",
-                "授权通知使用权后，系统媒体会话的曲名、歌手和播放状态会同步到圆屏，圆屏可控制上一首、播放或暂停、下一首。音乐信息不发送到导航服务器。",
-            ))
-            PrivacySection("存储与清理", listOf(
-                "最近地点、已连接设备标识和下载地图保存在手机上。地图页可删除下载包。",
-                "服务器访问日志可能保留 IP、请求时间、搜索词、位置参数及地图区域，由部署方的隐私政策说明。",
-            ))
-            Text(
-                "圆屏周边道路与建筑使用 OpenStreetMap / Protomaps 数据（ODbL-1.0）。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-            TextButton(onClick = onDismiss) { Text("完成") }
-            Spacer(Modifier.height(12.dp))
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            Box(Modifier.fillMaxWidth().height(48.dp)) {
+                Text(
+                    "隐私与数据",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.CenterEnd)) {
+                    Text("完成", color = IosBlue)
+                }
+            }
+            GroupSection(header = "位置与路线") {
+                Text(
+                    "地点搜索、规划和重新规划路线时，搜索内容、起终点及所需位置会发送给配置的导航服务。使用高德服务时，网关会再将所需信息发送给高德。在线周边地图请求也会透露所查看的区域。",
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+                Text(
+                    "导航期间，定位用于更新路线和圆屏指引；锁屏或切换应用后仍可继续。结束导航会停止导航定位。可在系统设置中调整权限。",
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+            GroupSection(header = "蓝牙与音乐") {
+                Text(
+                    "连接圆屏后，导航、速度及周边地图通过蓝牙同步。授权通知使用权后，系统媒体会话的曲名、歌手和播放状态会同步到圆屏，圆屏可控制上一首、播放或暂停、下一首。",
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+                Text(
+                    "音乐信息不发送到 MOTO GPS 的导航服务器。拒绝音乐权限不影响地点搜索和导航。",
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+            GroupSection(header = "存储与清理") {
+                Text(
+                    "最近地点、已连接设备标识和下载地图保存在手机上。首页可清空最近搜索；地图与离线下载页面可删除下载包、清理临时缓存。删除 App 可移除它的本地数据；系统备份可能包含部分本地数据。",
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+                Text(
+                    "服务器访问日志可能保留 IP、请求时间、搜索词、位置参数及地图区域。记录范围、轮转和保留期限由部署方的实际配置及隐私政策说明；这不等于数据只在手机上保存。",
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+            GroupSection(
+                header = "第三方服务",
+                footer = "手机路线底图由系统地图提供，圆屏周边道路与建筑使用 OpenStreetMap / Protomaps 数据。",
+            ) {
+                LinkRow("高德隐私政策", "https://lbs.amap.com/home/privacy/")
+                RowDivider()
+                LinkRow("OpenStreetMap 数据与许可", "https://www.openstreetmap.org/copyright")
+                RowDivider()
+                LinkRow("Protomaps 地图数据", "https://protomaps.com")
+            }
         }
     }
 }
 
 @Composable
-private fun PrivacySection(title: String, paragraphs: List<String>) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(title, fontWeight = FontWeight.SemiBold)
-        paragraphs.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+private fun LinkRow(label: String, url: String) {
+    val context = LocalContext.current
+    Row(
+        Modifier.fillMaxWidth().clickable {
+            runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            }
+        }.padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, fontSize = 16.sp, color = IosBlue, modifier = Modifier.weight(1f))
+        Text("›", fontSize = 14.sp, color = IosSecondary.copy(alpha = 0.6f))
     }
 }
+
+// MARK: - Map downloads sheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MapDownloadsSheet(vm: NavViewModel, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("地图与离线下载", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            Box(Modifier.fillMaxWidth().height(48.dp)) {
+                Text(
+                    "地图",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.CenterEnd)) {
+                    Text("完成", color = IosBlue)
+                }
+            }
             Text(
-                "骑行时自动加载圆屏周边的道路和建筑；城市和沿途下载在「地图」标签页管理。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
+                "城市和沿途地图在「地图」标签页下载与管理；骑行时自动加载圆屏周边的道路和建筑。",
+                fontSize = 15.sp,
+                color = IosSecondary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
-            TextButton(onClick = onDismiss) { Text("完成") }
-            Spacer(Modifier.height(12.dp))
+            GroupSection {
+                Row(
+                    Modifier.fillMaxWidth().clickable(onClick = onDismiss)
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                ) { Text("打开地图标签页", fontSize = 16.sp, color = IosBlue) }
+            }
         }
     }
 }

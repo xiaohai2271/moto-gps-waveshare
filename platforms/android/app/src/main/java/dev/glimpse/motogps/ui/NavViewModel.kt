@@ -56,7 +56,11 @@ class NavViewModel(application: Application) : AndroidViewModel(application) {
         NavigationForegroundService.stop(getApplication())
     }
 
-    val isNavigationActive: Boolean get() = session.isNavigationActive
+    val isNavigationActive: Boolean get() = session.state.value.isNavigating
+
+    /** Planning origin of the current preview (lon, lat), like iOS routePreviewOrigin. */
+    val routePreviewOrigin: Pair<Double, Double>?
+        get() = session.state.value.previewOrigin
 
     // --- demo -----------------------------------------------------------------
 

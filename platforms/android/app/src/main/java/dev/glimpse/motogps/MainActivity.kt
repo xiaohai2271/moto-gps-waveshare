@@ -3,6 +3,7 @@ package dev.glimpse.motogps
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -79,7 +80,7 @@ private fun AppScaffold(fixture: Map<String, String>) {
         },
     ) { padding ->
         when (tab) {
-            0 -> MotoAppScreen()
+            0 -> Box(Modifier.padding(bottom = padding.calculateBottomPadding())) { MotoAppScreen() }
             1 -> MapScreen(Modifier.padding(padding))
             else -> SelfCheckScreen(fixture, Modifier.padding(padding))
         }

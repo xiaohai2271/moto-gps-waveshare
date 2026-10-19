@@ -63,6 +63,8 @@ class NavigationSession(
         val mediaConnected: Boolean = false,
         val mediaTitle: String = "",
         val navigationFailure: String? = null,
+        val previewOrigin: Pair<Double, Double>? = null,
+        val isNavigating: Boolean = false,
         val log: List<String> = emptyList(),
     )
 
@@ -396,6 +398,7 @@ class NavigationSession(
             }
             previewOriginLon = origin.first
             previewOriginLat = origin.second
+            _state.value = _state.value.copy(previewOrigin = origin.first to origin.second)
             val requestId = ++requestCounter
             runCatching {
                 gateway.routeOptions(
@@ -595,6 +598,7 @@ class NavigationSession(
             return
         }
         navigating = true
+        _state.value = _state.value.copy(isNavigating = true)
         destinationLon = place.longitude
         destinationLat = place.latitude
         // PreviewSelectedRouteProvider semantics: the chosen candidate is fed to
@@ -635,6 +639,11 @@ class NavigationSession(
             routeOptions = emptyList(),
             chosenOptionIndex = -1,
             navigationFailure = null,
+            isNavigating = false,
+            engineState = 0,
+            remainingM = 0.0,
+            remainingS = 0,
+            previewOrigin = null,
         )
         log("导航已结束")
     }
