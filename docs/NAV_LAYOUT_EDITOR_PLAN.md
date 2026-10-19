@@ -141,7 +141,7 @@
 
 - 文字字号尽量复用现有资源（Montserrat 16/20/28/48、`moto_font_nav_16/20/28`），避免新增字库占用 flash。
 - 圆弧半径固定贴边：`progress_arc` 直径 440，`speed_arc` 直径 440；当两个弧停在同一侧时，`speed_arc` 自动缩到 408，保证内外分离。
-- 地图高度连续可调 160–320 px，默认 232；透明度 10–100%。
+- 地图高度连续可调 160–466 px，默认 232；透明度 10–100%。
 
 ### 4.4 拖拽、吸附与约束
 
@@ -237,14 +237,14 @@
 
 ### 5.3 `UiLayout`（0x15，手机→设备）
 
-固定 21 字节 + 每组件 10 字节，最多 101 字节；建议 `ACK_REQUESTED`，不加 `URGENT`，避免与导航帧抢发送队列。
+固定 22 字节 + 每组件 10 字节，最多 102 字节；建议 `ACK_REQUESTED`，不加 `URGENT`，避免与导航帧抢发送队列。
 
 ```text
 u8  revision              固定 1
 u16 layout_revision       手机侧单调递增，仅用于同步/去重
 u8  flags                 bit0 north_up, bit1 music_page_enabled, bit2 map_visible
 u8  theme_id              0 dark, 1 light, 2 high_contrast, 3 custom
-u8  map_height_px         160..320，偶数
+u16 map_height_px         160..466，偶数
 u8  map_opacity           0..100
 u8  route_r, route_g, route_b     0..255
 u8  route_width_px        1..16
@@ -441,7 +441,7 @@ repeat:
 - WiFi 栈预计增加 ~600 KB flash、~50 KB RAM；32 MB flash / 8 MB PSRAM 足够，但需实测 LVGL 帧率与堆余量。
 - 布局应用只在版本变化时执行，不在每帧执行；透明度/位置设置是 O(组件数)。
 - 圆弧重设角度会触发重绘，布局切换时允许一帧抖动。
-- `UiLayout` 最大 101 字节，单帧（MTU 185）即可发完，不增加分片压力。
+- `UiLayout` 最大 102 字节，单帧（MTU 185）即可发完，不增加分片压力。
 
 ## 7. Android 设计
 

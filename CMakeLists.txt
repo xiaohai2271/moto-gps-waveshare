@@ -14,6 +14,13 @@ set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "Do not build LVGL demos" FORCE)
 set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "Do not build LVGL examples" FORCE)
 set(CONFIG_LV_USE_THORVG_INTERNAL OFF CACHE BOOL "No vector animation engine in the navigation target" FORCE)
 
+# Sources and tests carry Chinese UI literals. /utf-8 makes MSVC read them as
+# UTF-8 with or without a BOM, so a file rewrite without a BOM cannot corrupt
+# a string literal (which surfaces as "newline in constant").
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 add_subdirectory(shared/coordinates EXCLUDE_FROM_ALL)
 add_subdirectory(shared/nav_core EXCLUDE_FROM_ALL)
 add_subdirectory(shared/nav_app EXCLUDE_FROM_ALL)

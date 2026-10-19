@@ -13,6 +13,7 @@
 //   * the result saturates at +/- 20 m/s^2 and decays to zero at standstill.
 
 #include <cstdint>
+#include <cstdio>
 
 namespace moto::nav::ui {
 

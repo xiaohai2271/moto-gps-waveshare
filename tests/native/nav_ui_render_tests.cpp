@@ -1,4 +1,4 @@
-﻿// Deterministic host-side rendering tests for the LVGL navigation UI.
+// Deterministic host-side rendering tests for the LVGL navigation UI.
 // A headless LVGL display renders the real moto_nav_ui into an RGB565
 // framebuffer; frames are hashed to verify bit-exact determinism, clean page
 // transitions and label/geometry residue cleanup.
@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -191,6 +192,9 @@ void test_frames_are_deterministic() {
 }
 
 void test_clearing_geometry_leaves_no_residue() {
+  // The previous test leaves the speed page selected; navigation geometry only
+  // updates while the navigation page is the visible one.
+  moto_nav_ui_set_page(MOTO_UI_PAGE_NAVIGATION);
   moto_ui_state_t with_route = base_state();
   fill_route(with_route, 18);
   fill_streets(with_route);

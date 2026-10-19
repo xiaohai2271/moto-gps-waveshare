@@ -21,6 +21,13 @@ add_library(moto_nav_ui STATIC
 target_include_directories(moto_nav_ui PUBLIC include)
 target_link_libraries(moto_nav_ui PUBLIC lvgl)
 target_compile_features(moto_nav_ui PUBLIC cxx_std_17)
+# The sources carry Chinese UI literals. /utf-8 makes MSVC read them as UTF-8
+# regardless of a BOM, so an editor or script that rewrites a file without a
+# BOM cannot silently corrupt a string literal (the Windows host build then
+# fails with "newline in constant").
+if(MSVC)
+    target_compile_options(moto_nav_ui PRIVATE /utf-8)
+endif()
 # GCC/Clang-only hygiene flags. MSVC has no -Wextra/-fno-* spellings, so the
 # Windows host test build (build/native, MSVC generator) must skip them.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

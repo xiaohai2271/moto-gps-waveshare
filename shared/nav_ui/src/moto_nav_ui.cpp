@@ -1,4 +1,4 @@
-﻿#include "moto_nav_ui.h"
+#include "moto_nav_ui.h"
 
 #include <algorithm>
 #include <cmath>
@@ -8,6 +8,9 @@
 #include <type_traits>
 
 #include "lvgl.h"
+
+#include "accel_filter.h"
+#include "layout_geometry.h"
 
 // The generated font sources are plain C translation units, so their public
 // descriptors carry C linkage. Declaring them with extern "C" here keeps the
@@ -77,6 +80,11 @@ struct MapPolyline {
     std::uint16_t count = 0;
 };
 
+// Forward declarations: the Ui struct keeps the live layout, and
+// reset_ui_state() seeds it before the layout engine below is defined.
+moto_ui_layout_t default_layout();
+void apply_layout_internal(const moto_ui_layout_t *incoming);
+
 struct Ui {
     lv_obj_t *screen = nullptr;
     lv_obj_t *pages[MOTO_UI_PAGE_COUNT]{};
@@ -135,6 +143,37 @@ struct Ui {
     lv_obj_t *nav_limit = nullptr;
     lv_obj_t *nav_limit_value = nullptr;
     lv_obj_t *nav_progress = nullptr;
+
+    // --- Editable layout components (plan §4.2) ---------------------------
+    // Every one of these is created once and only repositioned/resized by
+    // apply_layout(); per-frame updates only set text/values.
+    lv_obj_t *nav_map_base = nullptr;      // roads + buildings layer
+    lv_obj_t *nav_route_layer = nullptr;   // route + shadow layer
+    lv_obj_t *nav_speed = nullptr;         // speed value + unit
+    lv_obj_t *nav_speed_unit = nullptr;
+    lv_obj_t *nav_heading = nullptr;       // heading angle + cardinal
+    lv_obj_t *nav_heading_cardinal = nullptr;
+    lv_obj_t *nav_remaining_distance = nullptr;
+    lv_obj_t *nav_remaining_distance_caption = nullptr;
+    lv_obj_t *nav_remaining_time = nullptr;
+    lv_obj_t *nav_remaining_time_caption = nullptr;
+    lv_obj_t *nav_accel = nullptr;         // signed acceleration readout
+    lv_obj_t *nav_speed_arc_object = nullptr;  // speed/acceleration arc
+    // The maneuver glyph is authored for the M bounding box; S and L scale the
+    // same artwork (§4.3) so no second icon set is needed.
+    float maneuver_scale = 1.0F;
+    // The layout currently applied. Defaults match Android LayoutDefaults
+    // (§4.10) so an unpushed device shows the same page as the editor.
+    moto_ui_layout_t layout{};
+    bool layout_applied = false;
+    // Media capability gate for the music page (bridge-owned).
+    bool media_music_available = true;
+    // Acceleration smoothing (§6.4); pure logic lives in accel_filter.h.
+    moto::nav::ui::AccelFilter accel_filter{};
+    // Acceleration readout repaint throttle (deterministic renders).
+    std::uint32_t accel_readout_ms = 0;
+    bool accel_readout_valid = false;
+    unsigned accel_readout_speed_kph = 0xFFFFFFFFu;
 
     // A full-screen empty-state surface replaces the old tiny
     // WAITING FOR PHONE / WAITING FOR ROUTE caption. It is kept inside the
@@ -205,12 +244,169 @@ void reset_ui_state() {
     ui.lifecycle_visual = LifecycleVisual::Hidden;
     ui.lifecycle_target = LifecycleVisual::Hidden;
     ui.music_page_enabled = true;
+    ui.media_music_available = true;
+    ui.layout = default_layout();
+    ui.layout_applied = false;
     // Force the first geometry payload to bind every mutable LVGL line even
     // when its protocol revision happens to start at zero.
     ui.nav_route_generation = ~std::uint32_t{0};
     ui.nav_route_identity = ~std::uint32_t{0};
     ui.nav_road_scene_revision = ~std::uint32_t{0};
     ui.nav_building_scene_revision = ~std::uint32_t{0};
+}
+
+// ---------------------------------------------------------------------------
+// Editable navigation-page layout engine (plan §4 / §6.2).
+//
+// Layout application is idempotent and cheap: it only repositions, resizes
+// and restyles already-created objects. Nothing here allocates or recreates
+// LVGL objects, so a push from the phone costs one frame at most.
+// ---------------------------------------------------------------------------
+
+/** §4.10 default layout; mirrors Android LayoutDefaults byte for byte. */
+moto_ui_layout_t default_layout() {
+    moto_ui_layout_t layout{};
+    layout.north_up = 1;
+    layout.music_page_enabled = 1;
+    layout.map_visible = 1;
+    layout.theme_id = 0;
+    layout.map_height_px = MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT;
+    layout.map_opacity = 100;
+    layout.route_r = 0xFF; layout.route_g = 0xFF; layout.route_b = 0xFF;
+    layout.route_width_px = 6;
+    layout.route_opacity = 100;
+    layout.street_r = 0x8E; layout.street_g = 0x8E; layout.street_b = 0x93;
+    layout.street_width_px = 3;
+    layout.street_opacity = 35;
+    layout.building_opacity = 25;
+    layout.layer_mask = 0x07;
+    layout.zoom_percent = 100;
+    layout.component_count = 8;
+
+    layout.components[0] = {MOTO_UI_COMPONENT_SPEED, 1, MOTO_UI_SIZE_M, 100, 185, 300, 0, 0};
+    layout.components[1] = {MOTO_UI_COMPONENT_SPEED_LIMIT, 1, MOTO_UI_SIZE_M, 100, 300, 238, 0, 0};
+    layout.components[2] = {MOTO_UI_COMPONENT_HEADING, 0, MOTO_UI_SIZE_M, 100, 24, 40, 0, 0};
+    layout.components[3] = {MOTO_UI_COMPONENT_MANEUVER, 1, MOTO_UI_SIZE_M, 100, 29, 220, 0, 0};
+    layout.components[4] = {MOTO_UI_COMPONENT_REMAINING_DISTANCE, 1, MOTO_UI_SIZE_M, 90, 150, 390, 0, 0};
+    layout.components[5] = {MOTO_UI_COMPONENT_REMAINING_TIME, 1, MOTO_UI_SIZE_M, 90, 250, 390, 0, 0};
+    layout.components[6] = {MOTO_UI_COMPONENT_PROGRESS_ARC, 1, MOTO_UI_SIZE_M, 80, 0, 0, MOTO_UI_ARC_TOP, 120};
+    layout.components[7] = {MOTO_UI_COMPONENT_SPEED_ARC, 1, MOTO_UI_SIZE_M, 80, 0, 0, MOTO_UI_ARC_BOTTOM, 120};
+    return layout;
+}
+
+const moto_ui_component_layout_t *find_component(const moto_ui_layout_t &layout,
+                                                 std::uint8_t id) {
+    for(std::uint8_t i = 0; i < layout.component_count; ++i) {
+        if(layout.components[i].id == id) return &layout.components[i];
+    }
+    return nullptr;
+}
+
+/** §4.3 size table: (S, M, L) outer rectangles in 466-canvas design px. */
+void component_box(std::uint8_t id, std::uint8_t size, int &width, int &height) {
+    int s = 0, m = 0, l = 0;
+    switch(id) {
+        case MOTO_UI_COMPONENT_SPEED:               s = 72; m = 96; l = 124; break;
+        case MOTO_UI_COMPONENT_SPEED_LIMIT:         s = 44; m = 61; l = 78; break;
+        case MOTO_UI_COMPONENT_HEADING:             s = 68; m = 88; l = 112; break;
+        case MOTO_UI_COMPONENT_MANEUVER:            s = 150; m = 180; l = 210; break;
+        case MOTO_UI_COMPONENT_REMAINING_DISTANCE:  s = 92; m = 116; l = 146; break;
+        case MOTO_UI_COMPONENT_REMAINING_TIME:      s = 78; m = 100; l = 128; break;
+        default: break;
+    }
+    // Non-text components also carry a height axis; pairs are (w,h) triples.
+    static const int kHeights[6][3] = {
+        {56, 72, 92}, {44, 61, 78}, {60, 76, 96},
+        {108, 128, 148}, {44, 56, 68}, {44, 56, 68},
+    };
+    const int index = id - 1;
+    width = (size == MOTO_UI_SIZE_S) ? s : (size == MOTO_UI_SIZE_L) ? l : m;
+    height = (index >= 0 && index < 6)
+                 ? ((size == MOTO_UI_SIZE_S) ? kHeights[index][0]
+                    : (size == MOTO_UI_SIZE_L) ? kHeights[index][2]
+                                               : kHeights[index][1])
+                 : 0;
+}
+
+int arc_width_for_size(std::uint8_t size) {
+    return size == MOTO_UI_SIZE_S ? 4 : (size == MOTO_UI_SIZE_L ? 8 : 6);
+}
+
+int opacity_opa(std::uint8_t opacity) {
+    if(opacity > 100) opacity = 100;
+    if(opacity < 10) opacity = 10;
+    return opacity * 255 / 100;
+}
+
+/** LVGL arc centre angle for an anchor (0 deg = right, clockwise). */
+int anchor_center_angle(std::uint8_t anchor) {
+    switch(anchor) {
+        case MOTO_UI_ARC_TOP: return 270;
+        case MOTO_UI_ARC_RIGHT: return 0;
+        case MOTO_UI_ARC_BOTTOM: return 90;
+        case MOTO_UI_ARC_LEFT: return 180;
+        default: return 270;
+    }
+}
+
+std::uint16_t clamp_span(std::uint16_t span_deg) {
+    return (span_deg == 90 || span_deg == 180) ? span_deg : 120;
+}
+
+void place_component(lv_obj_t *object, const moto_ui_component_layout_t &c) {
+    int width = 0, height = 0;
+    component_box(c.id, c.size, width, height);
+    if(width > 0) lv_obj_set_size(object, px(width), px(height));
+    lv_obj_set_pos(object, px(c.x), px(c.y));
+}
+
+// Arc ids are the only components whose geometry is decided by the arc rules
+// rather than the rectangular size table.
+bool layout_component_is_arc(std::uint8_t id) {
+    return id == MOTO_UI_COMPONENT_PROGRESS_ARC ||
+           id == MOTO_UI_COMPONENT_SPEED_ARC;
+}
+
+void apply_arc(lv_obj_t *arc, const moto_ui_component_layout_t &c, int diameter,
+               std::uint8_t opacity) {
+    lv_obj_set_size(arc, px(diameter), px(diameter));
+    lv_obj_align(arc, LV_ALIGN_CENTER, 0, 0);
+    const int center = anchor_center_angle(c.anchor);
+    const int span = clamp_span(c.span_deg);
+    lv_arc_set_rotation(arc, 0);
+    lv_arc_set_bg_angles(arc, center - span / 2, center + span / 2);
+    lv_obj_set_style_arc_width(arc, px(arc_width_for_size(c.size)),
+                               LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, px(arc_width_for_size(c.size)),
+                               LV_PART_INDICATOR);
+    const int opa = opacity_opa(opacity);
+    lv_obj_set_style_arc_opa(arc, opa, LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(arc, opa, LV_PART_INDICATOR);
+}
+
+void apply_component(lv_obj_t *object, const moto_ui_component_layout_t &c,
+                     lv_obj_t *secondary = nullptr) {
+    if(object == nullptr) return;
+    if(!c.enabled) {
+        lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+        if(secondary != nullptr) lv_obj_add_flag(secondary, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(object, LV_OBJ_FLAG_HIDDEN);
+    if(secondary != nullptr) lv_obj_clear_flag(secondary, LV_OBJ_FLAG_HIDDEN);
+    if(layout_component_is_arc(c.id)) {
+        // Arcs are sized/anchored by their dedicated helper.
+        return;
+    }
+    place_component(object, c);
+    lv_obj_set_style_opa(object, opacity_opa(c.opacity), 0);
+    if(secondary != nullptr) {
+        lv_obj_set_style_opa(secondary, opacity_opa(c.opacity), 0);
+    }
+}
+
+lv_color_t rgb_color(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    return LV_COLOR_MAKE(r, g, b);
 }
 
 lv_obj_t *make_layer(lv_obj_t *parent) {
@@ -565,6 +761,16 @@ bool apply_building_geometry_frame(bool rebind_lines = true) {
     return pixels_changed || rebind_lines;
 }
 
+// Map layers carry no opaque background, so hiding a polyline only hides the
+// line object: the pixels it painted stay in the framebuffer until something
+// repaints that area. Every geometry add/clear therefore repaints the whole
+// map viewport, which keeps a clear-then-redraw cycle bit-exact.
+void invalidate_map_region() {
+    if(ui.nav_map != nullptr) {
+        lv_obj_invalidate(ui.nav_map);
+    }
+}
+
 void route_motion_tick(lv_timer_t *) {
     if(ui.nav_route_target_count < 2 || ui.nav_route_point_count < 2) return;
     // 0.39 at 25 ms has approximately the same smoothing time constant as
@@ -640,6 +846,7 @@ void update_road_geometry(const moto_ui_state_t *state) {
         for(lv_obj_t *road : ui.nav_roads) {
             lv_obj_add_flag(road, LV_OBJ_FLAG_HIDDEN);
         }
+        invalidate_map_region();
         return;
     }
 
@@ -691,7 +898,10 @@ void update_road_geometry(const moto_ui_state_t *state) {
             }
         }
     }
-    if(snap) apply_road_geometry_frame();
+    if(snap) {
+        apply_road_geometry_frame();
+        invalidate_map_region();
+    }
 }
 
 
@@ -708,6 +918,7 @@ void update_building_geometry(const moto_ui_state_t *state) {
         for(lv_obj_t *building : ui.nav_buildings) {
             lv_obj_add_flag(building, LV_OBJ_FLAG_HIDDEN);
         }
+        invalidate_map_region();
         return;
     }
 
@@ -758,7 +969,10 @@ void update_building_geometry(const moto_ui_state_t *state) {
             }
         }
     }
-    if(snap) apply_building_geometry_frame();
+    if(snap) {
+        apply_building_geometry_frame();
+        invalidate_map_region();
+    }
 }
 
 void update_route_geometry(const moto_ui_state_t *state) {
@@ -772,6 +986,10 @@ void update_route_geometry(const moto_ui_state_t *state) {
         lv_obj_add_flag(ui.nav_route_shadow, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui.nav_route, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui.nav_marker, LV_OBJ_FLAG_HIDDEN);
+        // Hiding a child does not repaint the parent's background: the route
+        // pixels would survive until the next unrelated redraw. Invalidate the
+        // route layer so the cleared frame really is cleared.
+        invalidate_map_region();
         return;
     }
 
@@ -800,33 +1018,37 @@ void update_route_geometry(const moto_ui_state_t *state) {
     lv_obj_remove_flag(ui.nav_route_shadow, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(ui.nav_route, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(ui.nav_marker, LV_OBJ_FLAG_HIDDEN);
-    if(snap) apply_route_geometry_frame();
+    if(snap) {
+        apply_route_geometry_frame();
+        invalidate_map_region();
+    }
 }
 
 lv_point_precise_t arrow_base(const lv_point_precise_t& previous,
-                              const lv_point_precise_t& tip,
-                              double head_length = px(24.0)) {
+                               const lv_point_precise_t& tip,
+                               double head_length = px(24.0),
+                               double scale = 1.0) {
     const double dx = static_cast<double>(tip.x - previous.x);
     const double dy = static_cast<double>(tip.y - previous.y);
     const double length = std::max(1.0, std::hypot(dx, dy));
     const double ux = dx / length;
     const double uy = dy / length;
     return {
-        static_cast<lv_value_precise_t>(tip.x - ux * head_length),
-        static_cast<lv_value_precise_t>(tip.y - uy * head_length),
+        static_cast<lv_value_precise_t>(tip.x - ux * head_length * scale),
+        static_cast<lv_value_precise_t>(tip.y - uy * head_length * scale),
     };
 }
 
 void draw_arrowhead(lv_layer_t *layer, const lv_area_t& area,
-                    const lv_point_precise_t& previous,
-                    const lv_point_precise_t& tip) {
+                     const lv_point_precise_t& previous,
+                     const lv_point_precise_t& tip, double scale = 1.0) {
     const double dx = static_cast<double>(tip.x - previous.x);
     const double dy = static_cast<double>(tip.y - previous.y);
     const double length = std::max(1.0, std::hypot(dx, dy));
     const double ux = dx / length;
     const double uy = dy / length;
-    const auto base = arrow_base(previous, tip);
-    const double wing = px(18.0);
+    const auto base = arrow_base(previous, tip, px(24.0), scale);
+    const double wing = px(18.0) * scale;
 
     lv_draw_triangle_dsc_t triangle;
     lv_draw_triangle_dsc_init(&triangle);
@@ -846,96 +1068,107 @@ void draw_arrowhead(lv_layer_t *layer, const lv_area_t& area,
     };
     lv_draw_triangle(layer, &triangle);
 }
-
 void draw_maneuver_icon(lv_event_t *event) {
     lv_obj_t *object = lv_event_get_target_obj(event);
     lv_area_t area;
     lv_obj_get_coords(object, &area);
     lv_layer_t *layer = lv_event_get_layer(event);
 
+    // §4.3: the S/M/L tiers scale the same authored artwork, so every glyph
+    // coordinate and stroke width is multiplied by the current tier factor.
+    const double scale = ui.maneuver_scale;
+    const auto gx = [scale](double value) {
+        return static_cast<lv_value_precise_t>(
+            std::lround(value * scale * MOTO_UI_CANVAS_WIDTH / 360.0));
+    };
+    const auto gw = [scale](double value) {
+        return static_cast<int32_t>(std::lround(
+            value * scale * MOTO_UI_CANVAS_WIDTH / 360.0));
+    };
+
     lv_point_precise_t points[8]{};
     int count = 0;
     switch(ui.nav_maneuver_type) {
         case MOTO_MANEUVER_RIGHT:
-            points[0] = {px(34), px(102)};
-            points[1] = {px(34), px(63)};
-            points[2] = {px(55), px(42)};
-            points[3] = {px(105), px(42)};
+            points[0] = {gx(34), gx(102)};
+            points[1] = {gx(34), gx(63)};
+            points[2] = {gx(55), gx(42)};
+            points[3] = {gx(105), gx(42)};
             count = 4;
             break;
         case MOTO_MANEUVER_LEFT:
-            points[0] = {px(82), px(102)};
-            points[1] = {px(82), px(63)};
-            points[2] = {px(61), px(42)};
-            points[3] = {px(11), px(42)};
+            points[0] = {gx(82), gx(102)};
+            points[1] = {gx(82), gx(63)};
+            points[2] = {gx(61), gx(42)};
+            points[3] = {gx(11), gx(42)};
             count = 4;
             break;
         case MOTO_MANEUVER_SLIGHT_RIGHT:
-            points[0] = {px(36), px(102)};
-            points[1] = {px(36), px(72)};
-            points[2] = {px(96), px(12)};
+            points[0] = {gx(36), gx(102)};
+            points[1] = {gx(36), gx(72)};
+            points[2] = {gx(96), gx(12)};
             count = 3;
             break;
         case MOTO_MANEUVER_SLIGHT_LEFT:
-            points[0] = {px(80), px(102)};
-            points[1] = {px(80), px(72)};
-            points[2] = {px(20), px(12)};
+            points[0] = {gx(80), gx(102)};
+            points[1] = {gx(80), gx(72)};
+            points[2] = {gx(20), gx(12)};
             count = 3;
             break;
         case MOTO_MANEUVER_UTURN:
-            points[0] = {px(88), px(102)};
-            points[1] = {px(88), px(50)};
-            points[2] = {px(82), px(33)};
-            points[3] = {px(69), px(23)};
-            points[4] = {px(51), px(20)};
-            points[5] = {px(34), px(27)};
-            points[6] = {px(25), px(43)};
-            points[7] = {px(25), px(84)};
+            points[0] = {gx(88), gx(102)};
+            points[1] = {gx(88), gx(50)};
+            points[2] = {gx(82), gx(33)};
+            points[3] = {gx(69), gx(23)};
+            points[4] = {gx(51), gx(20)};
+            points[5] = {gx(34), gx(27)};
+            points[6] = {gx(25), gx(43)};
+            points[7] = {gx(25), gx(84)};
             count = 8;
             break;
         case MOTO_MANEUVER_ROUNDABOUT: {
             lv_draw_line_dsc_t stem;
             lv_draw_line_dsc_init(&stem);
             stem.color = kWhite;
-            stem.width = px(11);
+            stem.width = gw(11);
             stem.round_start = 1;
             stem.round_end = 1;
-            stem.p1 = {static_cast<lv_value_precise_t>(area.x1 + px(58)),
-                       static_cast<lv_value_precise_t>(area.y1 + px(101))};
-            stem.p2 = {static_cast<lv_value_precise_t>(area.x1 + px(58)),
-                       static_cast<lv_value_precise_t>(area.y1 + px(79))};
+            stem.p1 = {static_cast<lv_value_precise_t>(area.x1 + gx(58)),
+                       static_cast<lv_value_precise_t>(area.y1 + gx(101))};
+            stem.p2 = {static_cast<lv_value_precise_t>(area.x1 + gx(58)),
+                       static_cast<lv_value_precise_t>(area.y1 + gx(79))};
             lv_draw_line(layer, &stem);
 
             lv_draw_arc_dsc_t circle;
             lv_draw_arc_dsc_init(&circle);
             circle.color = kWhite;
-            circle.width = px(11);
+            circle.width = gw(11);
             circle.rounded = 1;
             circle.center = {
-                static_cast<int32_t>(area.x1 + px(58)),
-                static_cast<int32_t>(area.y1 + px(53)),
+                static_cast<int32_t>(area.x1 + gx(58)),
+                static_cast<int32_t>(area.y1 + gx(53)),
             };
-            circle.radius = px(27);
+            circle.radius = static_cast<int32_t>(gx(27));
             circle.start_angle = 86;
             circle.end_angle = 326;
             lv_draw_arc(layer, &circle);
 
-            const lv_point_precise_t previous = {px(69), px(24)};
-            const lv_point_precise_t tip = {px(86), px(36)};
-            draw_arrowhead(layer, area, previous, tip);
+            const lv_point_precise_t previous = {gx(69), gx(24)};
+            const lv_point_precise_t tip = {gx(86), gx(36)};
+            draw_arrowhead(layer, area, previous, tip, scale);
             return;
         }
         case MOTO_MANEUVER_ARRIVE: {
             lv_draw_line_dsc_t pole;
             lv_draw_line_dsc_init(&pole);
             pole.color = kWhite;
-            pole.width = px(11);
+            pole.width = gw(11);
             pole.round_start = 1;
             pole.round_end = 1;
-            pole.p1 = {static_cast<lv_value_precise_t>(area.x1 + px(42)),
-                       static_cast<lv_value_precise_t>(area.y1 + px(101))};
-            pole.p2 = {static_cast<lv_value_precise_t>(area.x1 + px(42)),
-                       static_cast<lv_value_precise_t>(area.y1 + px(17))};
+            pole.p1 = {static_cast<lv_value_precise_t>(area.x1 + gx(42)),
+                       static_cast<lv_value_precise_t>(area.y1 + gx(101))};
+            pole.p2 = {static_cast<lv_value_precise_t>(area.x1 + gx(42)),
+                       static_cast<lv_value_precise_t>(area.y1 + gx(17))};
             lv_draw_line(layer, &pole);
 
             lv_draw_triangle_dsc_t flag;
@@ -943,24 +1176,24 @@ void draw_maneuver_icon(lv_event_t *event) {
             flag.color = kWhite;
             flag.opa = LV_OPA_COVER;
             flag.p[0] = {
-                static_cast<lv_value_precise_t>(area.x1 + px(46)),
-                static_cast<lv_value_precise_t>(area.y1 + px(20)),
+                static_cast<lv_value_precise_t>(area.x1 + gx(46)),
+                static_cast<lv_value_precise_t>(area.y1 + gx(20)),
             };
             flag.p[1] = {
-                static_cast<lv_value_precise_t>(area.x1 + px(102)),
-                static_cast<lv_value_precise_t>(area.y1 + px(39)),
+                static_cast<lv_value_precise_t>(area.x1 + gx(102)),
+                static_cast<lv_value_precise_t>(area.y1 + gx(39)),
             };
             flag.p[2] = {
-                static_cast<lv_value_precise_t>(area.x1 + px(46)),
-                static_cast<lv_value_precise_t>(area.y1 + px(58)),
+                static_cast<lv_value_precise_t>(area.x1 + gx(46)),
+                static_cast<lv_value_precise_t>(area.y1 + gx(58)),
             };
             lv_draw_triangle(layer, &flag);
             return;
         }
         case MOTO_MANEUVER_STRAIGHT:
         default:
-            points[0] = {px(58), px(103)};
-            points[1] = {px(58), px(10)};
+            points[0] = {gx(58), gx(103)};
+            points[1] = {gx(58), gx(10)};
             count = 2;
             break;
     }
@@ -978,13 +1211,13 @@ void draw_maneuver_icon(lv_event_t *event) {
     lv_draw_line_dsc_t line;
     lv_draw_line_dsc_init(&line);
     line.color = kWhite;
-    line.width = px(12);
+    line.width = gw(12);
     line.round_start = 1;
     line.round_end = 1;
     line.points = absolute;
     line.point_cnt = count;
     lv_draw_line(layer, &line);
-    draw_arrowhead(layer, area, points[count - 2], points[count - 1]);
+    draw_arrowhead(layer, area, points[count - 2], points[count - 1], scale);
 }
 
 void update_maneuver(moto_maneuver_t maneuver) {
@@ -1338,21 +1571,133 @@ void connection_success_timeout(lv_timer_t *timer) {
     refresh_lifecycle();
 }
 
-void set_navigation_guidance_visible(bool visible) {
-    lv_obj_t *objects[] = {
-        ui.nav_maneuver,
-        ui.nav_distance,
-        ui.nav_unit,
-        ui.nav_progress,
-    };
-    for(lv_obj_t *object : objects) {
-        if(visible) {
-            lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
-        }
+// Guidance visibility is the AND of the layout switch and data availability:
+// a component the user switched off must never be resurrected by guidance,
+// and one with no route must disappear even when the layout enables it.
+void set_component_visible(lv_obj_t *object, bool layout_enabled,
+                           bool data_available) {
+    if(object == nullptr) return;
+    if(layout_enabled && data_available) {
+        lv_obj_clear_flag(object, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+void set_navigation_guidance_visible(bool visible) {
+    const moto_ui_component_layout_t *maneuver =
+        find_component(ui.layout, MOTO_UI_COMPONENT_MANEUVER);
+    const moto_ui_component_layout_t *remaining_distance =
+        find_component(ui.layout, MOTO_UI_COMPONENT_REMAINING_DISTANCE);
+    const moto_ui_component_layout_t *remaining_time =
+        find_component(ui.layout, MOTO_UI_COMPONENT_REMAINING_TIME);
+    const moto_ui_component_layout_t *progress =
+        find_component(ui.layout, MOTO_UI_COMPONENT_PROGRESS_ARC);
+
+    set_component_visible(ui.nav_maneuver,
+                          maneuver != nullptr && maneuver->enabled, visible);
+    set_component_visible(ui.nav_distance,
+                          maneuver != nullptr && maneuver->enabled, visible);
+    set_component_visible(ui.nav_unit,
+                          maneuver != nullptr && maneuver->enabled, visible);
+    set_component_visible(ui.nav_progress,
+                          progress != nullptr && progress->enabled, visible);
+    set_component_visible(ui.nav_remaining_distance,
+                          remaining_distance != nullptr &&
+                              remaining_distance->enabled,
+                          visible);
+    set_component_visible(ui.nav_remaining_distance_caption,
+                          remaining_distance != nullptr &&
+                              remaining_distance->enabled,
+                          visible);
+    set_component_visible(ui.nav_remaining_time,
+                          remaining_time != nullptr && remaining_time->enabled,
+                          visible);
+    set_component_visible(ui.nav_remaining_time_caption,
+                          remaining_time != nullptr && remaining_time->enabled,
+                          visible);
     if(!visible) lv_obj_add_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+}
+
+// The acceleration readout hugs the speed arc band, so its position follows
+// the arc anchor rather than the per-frame text updates: aligning here keeps a
+// label whose glyph width never changes bit-exact between frames.
+void align_accel_readout() {
+    if(ui.nav_accel == nullptr || ui.nav_speed_arc_object == nullptr) return;
+    const moto_ui_component_layout_t *arc =
+        find_component(ui.layout, MOTO_UI_COMPONENT_SPEED_ARC);
+    if(arc == nullptr) return;
+    const int offset = 408 / 6;
+    int dx = 0, dy = 0;
+    switch(arc->anchor) {
+        case MOTO_UI_ARC_TOP:    dy = -offset; break;
+        case MOTO_UI_ARC_BOTTOM: dy = offset; break;
+        case MOTO_UI_ARC_LEFT:   dx = -offset; break;
+        case MOTO_UI_ARC_RIGHT:  dx = offset; break;
+        default: break;
+    }
+    lv_obj_align_to(ui.nav_accel, ui.nav_speed_arc_object, LV_ALIGN_CENTER,
+                    dx, dy);
+    // The readout is centre aligned inside a fixed-width box: a sign change or
+    // an extra digit must not move the glyphs, otherwise an otherwise identical
+    // frame shifts by a pixel and stops being bit-exact.
+    lv_obj_set_width(ui.nav_accel, px(72));
+    lv_obj_set_style_text_align(ui.nav_accel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_height(ui.nav_accel, lv_font_montserrat_20.line_height);
+}
+// Speed-difference acceleration readout for the speed arc (plan §6.4). The
+// pure filter lives in accel_filter.h; this only paints it.
+void update_accel_readout(unsigned speed_kph) {
+    // The readout is time based, so repaint it at most every 100 ms; painting
+    // every frame would make the navigation page depend on the wall clock.
+    const std::uint32_t now_ms = lv_tick_get();
+    const std::uint32_t last_ms = ui.accel_readout_ms;
+    const std::uint32_t elapsed = now_ms >= last_ms ? now_ms - last_ms : 0;
+    // Only advance the filter when the speed actually changed. Feeding a
+    // constant speed would keep evolving the EMA (time based slope) and make
+    // an otherwise identical frame differ, which breaks deterministic
+    // renders and shows a phantom acceleration at steady speed.
+    if(ui.accel_readout_valid && elapsed < 100 &&
+       speed_kph == ui.accel_readout_speed_kph) {
+        return;
+    }
+    ui.accel_readout_ms = now_ms;
+    ui.accel_readout_valid = true;
+    // A discontinuous speed (first fix, or a jump the window cannot explain)
+    // restarts the window: differentiating across the gap would report a huge
+    // phantom acceleration while the EMA catches up.
+    if(ui.accel_readout_speed_kph != 0xFFFFFFFFu &&
+       (speed_kph > ui.accel_readout_speed_kph + 5 ||
+        speed_kph + 5 < ui.accel_readout_speed_kph)) {
+        moto::nav::ui::accel_filter_reset(ui.accel_filter);
+    }
+    ui.accel_readout_speed_kph = speed_kph;
+    moto::nav::ui::accel_filter_push(ui.accel_filter,
+                                     static_cast<float>(speed_kph),
+                                     now_ms);
+    const float accel_mps2 = ui.accel_filter.accel_mps2;
+    lv_color_t color = kIce;
+    if(accel_mps2 > 0.5F) {
+        color = kGreen;
+    } else if(accel_mps2 < -0.5F) {
+        color = kRed;
+    }
+    if(ui.nav_speed_arc_object != nullptr) {
+        lv_obj_set_style_arc_color(ui.nav_speed_arc_object, color,
+                                   LV_PART_INDICATOR);
+    }
+    if(ui.nav_accel == nullptr) return;
+    // A negative zero must never print as "+-0.0": that would change the label
+    // width and shift the readout by a pixel between otherwise equal frames.
+    const float shown = accel_mps2 == 0.0F ? 0.0F : accel_mps2;
+    char text[12];
+    if(shown > 0.0F) {
+        std::snprintf(text, sizeof(text), "+%.1f", shown);
+    } else {
+        std::snprintf(text, sizeof(text), "%.1f", shown);
+    }
+    lv_label_set_text(ui.nav_accel, text);
+    lv_obj_set_style_text_color(ui.nav_accel, color, 0);
 }
 
 void update_nav_status(const moto_ui_state_t *state) {
@@ -1389,6 +1734,15 @@ void update_navigation(const moto_ui_state_t *state) {
     update_maneuver(state->maneuver);
     update_nav_status(state);
 
+    // North-up: the map stays fixed and the vehicle marker carries the real
+    // phone heading (plan §4.7). Heading-up keeps the marker pointing up
+    // because the whole map rotates under it.
+    if(ui.nav_marker != nullptr) {
+        const int rotation_tenths =
+            ui.layout.north_up ? static_cast<int>(state->heading_deg) * 10 : 0;
+        lv_obj_set_style_transform_rotation(ui.nav_marker, rotation_tenths, 0);
+    }
+
     // Never suggest "go straight for 0 m" while there is no route. Waiting is
     // a connection state, not actionable navigation guidance.
     const bool has_guidance = ui.demo_active ||
@@ -1399,6 +1753,68 @@ void update_navigation(const moto_ui_state_t *state) {
         state->route_request_in_flight != 0;
     set_navigation_guidance_visible(has_guidance);
     refresh_lifecycle();
+
+    // Speed / heading / speed-arc do not depend on a route: they stay live
+    // while the phone is acquiring a fix, exactly like the dedicated pages.
+    {
+        const moto_ui_component_layout_t *speed =
+            find_component(ui.layout, MOTO_UI_COMPONENT_SPEED);
+        const moto_ui_component_layout_t *heading =
+            find_component(ui.layout, MOTO_UI_COMPONENT_HEADING);
+        const moto_ui_component_layout_t *speed_arc =
+            find_component(ui.layout, MOTO_UI_COMPONENT_SPEED_ARC);
+        const moto_ui_component_layout_t *speed_limit =
+            find_component(ui.layout, MOTO_UI_COMPONENT_SPEED_LIMIT);
+
+        char speed_text[8];
+        std::snprintf(speed_text, sizeof(speed_text), "%u",
+                      static_cast<unsigned>(state->speed_kph));
+        lv_label_set_text(ui.nav_speed, speed_text);
+        lv_obj_align_to(ui.nav_speed_unit, ui.nav_speed,
+                        LV_ALIGN_OUT_RIGHT_BOTTOM, px(4), px(-6));
+
+        char heading_text[12];
+        std::snprintf(heading_text, sizeof(heading_text), "%03u°",
+                      static_cast<unsigned>(state->heading_deg));
+        lv_label_set_text(ui.nav_heading, heading_text);
+        lv_label_set_text(ui.nav_heading_cardinal,
+                          cardinal_name(state->heading_deg));
+        lv_obj_align_to(ui.nav_heading_cardinal, ui.nav_heading,
+                        LV_ALIGN_OUT_BOTTOM_MID, 0, px(2));
+
+        set_component_visible(ui.nav_speed, speed != nullptr && speed->enabled, true);
+        set_component_visible(ui.nav_speed_unit, speed != nullptr && speed->enabled,
+                              true);
+        set_component_visible(ui.nav_heading,
+                              heading != nullptr && heading->enabled, true);
+        set_component_visible(ui.nav_heading_cardinal,
+                              heading != nullptr && heading->enabled, true);
+        set_component_visible(ui.nav_speed_arc_object,
+                              speed_arc != nullptr && speed_arc->enabled, true);
+        // The acceleration readout only exists when the speed arc is on.
+        set_component_visible(ui.nav_accel,
+                              speed_arc != nullptr && speed_arc->enabled, true);
+
+        // Speed limit: hidden when the provider reports zero.
+        if(state->speed_limit_kph > 0) {
+            char limit[8];
+            std::snprintf(limit, sizeof(limit), "%u",
+                          static_cast<unsigned>(state->speed_limit_kph));
+            lv_label_set_text(ui.nav_limit_value, limit);
+            set_component_visible(ui.nav_limit,
+                                  speed_limit != nullptr && speed_limit->enabled,
+                                  true);
+        } else {
+            lv_obj_add_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        if(speed_arc != nullptr && speed_arc->enabled) {
+            lv_arc_set_value(ui.nav_speed_arc_object,
+                             std::min<int>(160, static_cast<int>(state->speed_kph)));
+            update_accel_readout(state->speed_kph);
+        }
+    }
+
     if(!has_guidance) return;
 
     char value[16];
@@ -1414,9 +1830,11 @@ void update_navigation(const moto_ui_state_t *state) {
     if(state->mode == MOTO_UI_ARRIVED) std::snprintf(value, sizeof(value), "0");
     lv_label_set_text(ui.nav_distance, value);
     lv_label_set_text(ui.nav_unit, unit);
-    // This number is never the total trip distance. Its physical attachment to
-    // the maneuver glyph makes that meaning clear without an explanatory label.
-    lv_obj_align(ui.nav_distance, LV_ALIGN_TOP_LEFT, px(151), px(244));
+    // The distance is anchored inside the maneuver component box (layout
+    // position), never by an absolute per-frame align: a layout push moves
+    // the box and this text follows on the next frame.
+    lv_obj_align_to(ui.nav_distance, ui.nav_maneuver, LV_ALIGN_OUT_RIGHT_MID,
+                    px(2), 0);
     lv_obj_align_to(ui.nav_unit, ui.nav_distance, LV_ALIGN_OUT_RIGHT_BOTTOM,
                     px(6), px(-7));
 
@@ -1425,14 +1843,39 @@ void update_navigation(const moto_ui_state_t *state) {
     lv_obj_set_style_arc_color(ui.nav_progress, traffic_color(state->traffic),
                                LV_PART_INDICATOR);
 
-    if(state->speed_limit_kph > 0) {
-        char limit[8];
-        std::snprintf(limit, sizeof(limit), "%u",
-                      static_cast<unsigned>(state->speed_limit_kph));
-        lv_label_set_text(ui.nav_limit_value, limit);
-        lv_obj_remove_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+    // --- Layout components: remaining distance / time (plan §4.2) ---------
+    if(ui.nav_remaining_distance != nullptr) {
+        char remaining[16];
+        if(state->remaining_distance_m >= 1000) {
+            std::snprintf(remaining, sizeof(remaining), "%.1f",
+                          state->remaining_distance_m / 1000.0);
+            lv_label_set_text(ui.nav_remaining_distance_caption, "剩余 km");
+        } else {
+            std::snprintf(remaining, sizeof(remaining), "%u",
+                          static_cast<unsigned>(state->remaining_distance_m));
+            lv_label_set_text(ui.nav_remaining_distance_caption, "剩余 m");
+        }
+        lv_label_set_text(ui.nav_remaining_distance, remaining);
+        lv_obj_align_to(ui.nav_remaining_distance_caption,
+                        ui.nav_remaining_distance,
+                        LV_ALIGN_OUT_BOTTOM_LEFT, 0, px(2));
+    }
+    if(ui.nav_remaining_time != nullptr) {
+        char remaining[16];
+        if(state->remaining_time_s >= 3600) {
+            std::snprintf(remaining, sizeof(remaining), "%uh%02um",
+                          static_cast<unsigned>(state->remaining_time_s / 3600),
+                          static_cast<unsigned>(
+                              (state->remaining_time_s % 3600) / 60));
+            lv_label_set_text(ui.nav_remaining_time_caption, "剩余时间");
+        } else {
+            std::snprintf(remaining, sizeof(remaining), "%u",
+                          static_cast<unsigned>(state->remaining_time_s / 60));
+            lv_label_set_text(ui.nav_remaining_time_caption, "剩余分钟");
+        }
+        lv_label_set_text(ui.nav_remaining_time, remaining);
+        lv_obj_align_to(ui.nav_remaining_time_caption, ui.nav_remaining_time,
+                        LV_ALIGN_OUT_BOTTOM_LEFT, 0, px(2));
     }
 }
 
@@ -1543,12 +1986,20 @@ void create_navigation_page() {
     lv_obj_add_flag(ui.nav_map, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_set_height(ui.nav_map, px(232));
 
+    // Two sibling layers instead of one: the basemap (roads + buildings) and
+    // the selected route are dimmed independently by the layout, so a
+    // translucent basemap never fades the route with it.
+    ui.nav_map_base = make_layer(ui.nav_map);
+    lv_obj_set_height(ui.nav_map_base, px(232));
+    ui.nav_route_layer = make_layer(ui.nav_map);
+    lv_obj_set_height(ui.nav_route_layer, px(232));
+
     // Real building footprints are quiet closed outlines beneath both roads
     // and the selected route. No inferred rectangles or decorative fill is
     // generated on-device.
     for(std::uint8_t i = 0;
         i < MOTO_UI_BUILDING_FOOTPRINT_CAPACITY; ++i) {
-        ui.nav_buildings[i] = create_map_polyline(ui.nav_map,
+        ui.nav_buildings[i] = create_map_polyline(ui.nav_map_base,
                                                   ui.nav_building_lines[i]);
         lv_obj_set_size(ui.nav_buildings[i], MOTO_UI_CANVAS_WIDTH, px(232));
         lv_obj_set_style_line_width(ui.nav_buildings[i], px(1), 0);
@@ -1563,7 +2014,7 @@ void create_navigation_page() {
     // diagonal. The bundled Jinan fixture uses all eight bounded slots; a
     // future online provider must simplify its response to the same limit.
     for(std::uint8_t i = 0; i < MOTO_UI_ROAD_POLYLINE_CAPACITY; ++i) {
-        ui.nav_roads[i] = create_map_polyline(ui.nav_map, ui.nav_road_lines[i]);
+        ui.nav_roads[i] = create_map_polyline(ui.nav_map_base, ui.nav_road_lines[i]);
         lv_obj_set_size(ui.nav_roads[i], MOTO_UI_CANVAS_WIDTH, px(232));
         lv_obj_set_style_line_width(ui.nav_roads[i], px(3), 0);
         lv_obj_set_style_line_color(ui.nav_roads[i], kRoadGray, 0);
@@ -1572,12 +2023,12 @@ void create_navigation_page() {
         lv_obj_add_flag(ui.nav_roads[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    ui.nav_route_shadow = create_map_polyline(ui.nav_map, ui.nav_route_shadow_line);
+    ui.nav_route_shadow = create_map_polyline(ui.nav_route_layer, ui.nav_route_shadow_line);
     lv_obj_set_size(ui.nav_route_shadow, MOTO_UI_CANVAS_WIDTH, px(232));
     lv_obj_set_style_line_width(ui.nav_route_shadow, px(13), 0);
     lv_obj_set_style_line_color(ui.nav_route_shadow, kGraphite, 0);
     lv_obj_set_style_line_rounded(ui.nav_route_shadow, true, 0);
-    ui.nav_route = create_map_polyline(ui.nav_map, ui.nav_route_line);
+    ui.nav_route = create_map_polyline(ui.nav_route_layer, ui.nav_route_line);
     lv_obj_set_size(ui.nav_route, MOTO_UI_CANVAS_WIDTH, px(232));
     lv_obj_set_style_line_width(ui.nav_route, px(6), 0);
     lv_obj_set_style_line_color(ui.nav_route, kWhite, 0);
@@ -1586,7 +2037,7 @@ void create_navigation_page() {
                                                  kRouteMotionFrameMs,
                                                  nullptr);
 
-    ui.nav_marker = lv_obj_create(ui.nav_map);
+    ui.nav_marker = lv_obj_create(ui.nav_route_layer);
     lv_obj_remove_style_all(ui.nav_marker);
     lv_obj_set_size(ui.nav_marker, px(35), px(37));
     lv_obj_set_pos(ui.nav_marker, px(163), px(177));
@@ -1610,8 +2061,12 @@ void create_navigation_page() {
     lv_obj_add_event_cb(ui.nav_maneuver, draw_maneuver_icon,
                         LV_EVENT_DRAW_MAIN_END, nullptr);
 
-    ui.nav_distance = make_label(page, &lv_font_montserrat_48, kWhite, "300");
-    ui.nav_unit = make_label(page, &lv_font_montserrat_20, kQuiet, "m");
+    // The maneuver distance is part of the maneuver component (§C), so it is a
+    // child of that container and positioned relatively to the icon.
+    ui.nav_distance = make_label(ui.nav_maneuver, &lv_font_montserrat_48,
+                                 kWhite, "300");
+    ui.nav_unit = make_label(ui.nav_maneuver, &lv_font_montserrat_20, kQuiet,
+                             "m");
 
     ui.nav_limit = lv_obj_create(page);
     lv_obj_set_size(ui.nav_limit, px(61), px(61));
@@ -1628,6 +2083,47 @@ void create_navigation_page() {
     lv_obj_clear_flag(ui.nav_limit, LV_OBJ_FLAG_CLICKABLE);
     ui.nav_limit_value = make_label(ui.nav_limit, &lv_font_montserrat_28, kBlack, "70");
     lv_obj_center(ui.nav_limit_value);
+
+    // --- Layout-editable components (plan §4.2) ---------------------------
+    // Created once here; apply_layout() repositions/resizes/restyles them.
+    ui.nav_speed = make_label(page, &lv_font_montserrat_48, kWhite, "72");
+    ui.nav_speed_unit = make_label(page, &lv_font_montserrat_20, kQuiet, "km/h");
+    lv_obj_add_flag(ui.nav_speed, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.nav_speed_unit, LV_OBJ_FLAG_HIDDEN);
+
+    ui.nav_heading = make_label(page, &lv_font_montserrat_48, kWhite, "0");
+    ui.nav_heading_cardinal =
+        make_label(page, &moto_font_nav_16, kQuiet, "N");
+    lv_obj_add_flag(ui.nav_heading, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.nav_heading_cardinal, LV_OBJ_FLAG_HIDDEN);
+
+    ui.nav_remaining_distance =
+        make_label(page, &lv_font_montserrat_48, kWhite, "0.0");
+    ui.nav_remaining_distance_caption =
+        make_label(page, &moto_font_nav_16, kQuiet, "剩余");
+    lv_obj_add_flag(ui.nav_remaining_distance, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.nav_remaining_distance_caption, LV_OBJ_FLAG_HIDDEN);
+
+    ui.nav_remaining_time =
+        make_label(page, &lv_font_montserrat_48, kWhite, "0");
+    ui.nav_remaining_time_caption =
+        make_label(page, &moto_font_nav_16, kQuiet, "剩余时间");
+    lv_obj_add_flag(ui.nav_remaining_time, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.nav_remaining_time_caption, LV_OBJ_FLAG_HIDDEN);
+
+    // Signed acceleration readout pinned inside the speed arc (plan §6.4).
+    ui.nav_accel = make_label(page, &moto_font_nav_16, kIce, "+0.0");
+    lv_obj_add_flag(ui.nav_accel, LV_OBJ_FLAG_HIDDEN);
+
+    // Speed/acceleration arc (§4.5): hugs the bezel like the progress arc and
+    // is recoloured by the acceleration sign.
+    ui.nav_speed_arc_object = lv_arc_create(page);
+    lv_arc_set_range(ui.nav_speed_arc_object, 0, 160);
+    lv_obj_remove_style(ui.nav_speed_arc_object, nullptr, LV_PART_KNOB);
+    lv_obj_clear_flag(ui.nav_speed_arc_object, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_color(ui.nav_speed_arc_object, kGraphite, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(ui.nav_speed_arc_object, kIce, LV_PART_INDICATOR);
+    lv_obj_add_flag(ui.nav_speed_arc_object, LV_OBJ_FLAG_HIDDEN);
 
     ui.nav_progress = lv_arc_create(page);
     lv_obj_set_size(ui.nav_progress, px(316), px(316));
@@ -1990,6 +2486,8 @@ extern "C" void moto_nav_ui_create(void) {
     create_compass_page();
     create_music_page();
     create_page_dots();
+    // Apply the retained layout (default, or the one pushed before create).
+    apply_layout_internal(&ui.layout);
     // Press events are delivered to the topmost object under the finger, not
     // necessarily to its page. Register once across the finished tree so any
     // touch reliably wakes the dots, including the map and music controls.
@@ -2110,11 +2608,232 @@ extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t *state) {
 
 extern "C" void moto_nav_ui_set_music_page_enabled(uint8_t enabled) {
     if(ui.screen == nullptr) return;
-    ui.music_page_enabled = enabled != 0;
+    // `enabled` is the media capability signal from PhoneNavBridge; the user's
+    // layout switch gates it, so the effective visibility is the AND of both.
+    ui.media_music_available = enabled != 0;
+    ui.music_page_enabled = ui.layout.music_page_enabled != 0 &&
+                            ui.media_music_available;
     if(!ui.music_page_enabled && ui.page == MOTO_UI_PAGE_MUSIC) {
         show_page(MOTO_UI_PAGE_NAVIGATION, true);
     }
     update_page_dots();
+}
+
+// ---------------------------------------------------------------------------
+// Layout application entry points (plan §6.2). The layout is copied, clamped
+// and applied in place; safe to call before moto_nav_ui_create, in which case
+// the retained layout is applied when the objects exist.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void apply_layout_internal(const moto_ui_layout_t *incoming) {
+    if(incoming == nullptr) return;
+    moto_ui_layout_t next = *incoming;
+
+    // Clamp to the protocol ranges so a stale phone can never produce an
+    // invalid viewport or an invisible component.
+    if(next.component_count > MOTO_UI_LAYOUT_COMPONENT_COUNT) {
+        next.component_count = MOTO_UI_LAYOUT_COMPONENT_COUNT;
+    }
+    next.map_height_px = static_cast<std::uint16_t>(
+        std::clamp<int>(next.map_height_px, MOTO_UI_LAYOUT_MIN_MAP_HEIGHT,
+                        MOTO_UI_LAYOUT_MAX_MAP_HEIGHT));
+    if((next.map_height_px & 1U) != 0U) next.map_height_px -= 1;
+    next.map_opacity = next.map_opacity > 100 ? 100 : next.map_opacity;
+    next.zoom_percent = std::clamp<int>(next.zoom_percent, 50, 200);
+    for(std::uint8_t i = 0; i < next.component_count; ++i) {
+        moto_ui_component_layout_t &c = next.components[i];
+        if(c.size > MOTO_UI_SIZE_L) c.size = MOTO_UI_SIZE_M;
+        if(c.opacity > 100) c.opacity = 100;
+        if(c.opacity < 10) c.opacity = 10;
+        if(c.anchor > MOTO_UI_ARC_LEFT) c.anchor = MOTO_UI_ARC_TOP;
+        c.span_deg = clamp_span(c.span_deg);
+    }
+
+    ui.layout = next;
+    ui.layout_applied = true;
+
+    // Map viewport + layers.
+    // map_height_px is already expressed in 466-canvas pixels (§4.1), so it is
+    // used verbatim; only the authored design-pixel helpers go through px().
+    const int map_height = static_cast<int>(ui.layout.map_height_px);
+    if(ui.nav_map != nullptr) {
+        lv_obj_set_height(ui.nav_map, map_height);
+    }
+    if(ui.nav_map_base != nullptr) {
+        lv_obj_set_height(ui.nav_map_base, map_height);
+        lv_obj_set_style_opa(ui.nav_map_base, opacity_opa(ui.layout.map_opacity), 0);
+    }
+    if(ui.nav_route_layer != nullptr) {
+        lv_obj_set_height(ui.nav_route_layer, map_height);
+        lv_obj_set_style_opa(ui.nav_route_layer, opacity_opa(ui.layout.route_opacity), 0);
+    }
+    // Route / street styling (§1.e).
+    if(ui.nav_route != nullptr) {
+        lv_obj_set_style_line_width(ui.nav_route, px(ui.layout.route_width_px), 0);
+        lv_obj_set_style_line_color(
+            ui.nav_route,
+            rgb_color(ui.layout.route_r, ui.layout.route_g, ui.layout.route_b), 0);
+    }
+    if(ui.nav_route_shadow != nullptr) {
+        lv_obj_set_style_line_width(ui.nav_route_shadow,
+                                    px(ui.layout.route_width_px + 7), 0);
+    }
+    if(ui.nav_map_base != nullptr) {
+        const bool roads = (ui.layout.layer_mask & 0x01) != 0;
+        const bool buildings = (ui.layout.layer_mask & 0x02) != 0;
+        for(std::uint8_t i = 0; i < MOTO_UI_ROAD_POLYLINE_CAPACITY; ++i) {
+            if(ui.nav_roads[i] == nullptr) continue;
+            lv_obj_set_style_line_width(ui.nav_roads[i], px(ui.layout.street_width_px), 0);
+            lv_obj_set_style_line_color(
+                ui.nav_roads[i],
+                rgb_color(ui.layout.street_r, ui.layout.street_g, ui.layout.street_b), 0);
+            lv_obj_set_style_line_opa(ui.nav_roads[i], opacity_opa(ui.layout.street_opacity), 0);
+            if(!roads) {
+                lv_obj_add_flag(ui.nav_roads[i], LV_OBJ_FLAG_HIDDEN);
+            } else if(ui.nav_road_polyline_count > i) {
+                lv_obj_clear_flag(ui.nav_roads[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        for(std::uint8_t i = 0; i < MOTO_UI_BUILDING_FOOTPRINT_CAPACITY; ++i) {
+            if(ui.nav_buildings[i] == nullptr) continue;
+            lv_obj_set_style_line_opa(ui.nav_buildings[i],
+                                      opacity_opa(ui.layout.building_opacity), 0);
+            if(!buildings) {
+                lv_obj_add_flag(ui.nav_buildings[i], LV_OBJ_FLAG_HIDDEN);
+            } else if(ui.nav_building_footprint_count > i) {
+                lv_obj_clear_flag(ui.nav_buildings[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+    if(ui.nav_route_layer != nullptr && (ui.layout.layer_mask & 0x04) == 0) {
+        lv_obj_add_flag(ui.nav_route_layer, LV_OBJ_FLAG_HIDDEN);
+    } else if(ui.nav_route_layer != nullptr) {
+        lv_obj_clear_flag(ui.nav_route_layer, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Arc pairing: two arcs on the same side get inner/outer diameters.
+    const moto_ui_component_layout_t *progress =
+        find_component(ui.layout, MOTO_UI_COMPONENT_PROGRESS_ARC);
+    const moto_ui_component_layout_t *speed_arc =
+        find_component(ui.layout, MOTO_UI_COMPONENT_SPEED_ARC);
+    const bool same_side = progress != nullptr && speed_arc != nullptr &&
+                           progress->enabled && speed_arc->enabled &&
+                           progress->anchor == speed_arc->anchor;
+
+    // Per-component application.
+    for(std::uint8_t i = 0; i < ui.layout.component_count; ++i) {
+        const moto_ui_component_layout_t &c = ui.layout.components[i];
+        switch(c.id) {
+            case MOTO_UI_COMPONENT_SPEED:
+                apply_component(ui.nav_speed, c, ui.nav_speed_unit);
+                break;
+            case MOTO_UI_COMPONENT_SPEED_LIMIT:
+                apply_component(ui.nav_limit, c, ui.nav_limit_value);
+                break;
+            case MOTO_UI_COMPONENT_HEADING:
+                apply_component(ui.nav_heading, c, ui.nav_heading_cardinal);
+                break;
+            case MOTO_UI_COMPONENT_MANEUVER: {
+                apply_component(ui.nav_maneuver, c);
+                // §4.3: the maneuver glyph is authored for the M bounding box
+                // and scales with the tier, so S/L keep the same artwork.
+                int box_width = 0, box_height = 0;
+                component_box(c.id, c.size, box_width, box_height);
+                const int medium_width = 180;
+                ui.maneuver_scale = medium_width > 0 && box_width > 0
+                                        ? static_cast<float>(box_width) /
+                                              static_cast<float>(medium_width)
+                                        : 1.0F;
+                if(ui.nav_maneuver != nullptr) {
+                    lv_obj_invalidate(ui.nav_maneuver);
+                }
+                break;
+            }
+            case MOTO_UI_COMPONENT_REMAINING_DISTANCE:
+                apply_component(ui.nav_remaining_distance, c,
+                                ui.nav_remaining_distance_caption);
+                break;
+            case MOTO_UI_COMPONENT_REMAINING_TIME:
+                apply_component(ui.nav_remaining_time, c,
+                                ui.nav_remaining_time_caption);
+                break;
+            case MOTO_UI_COMPONENT_PROGRESS_ARC:
+                if(ui.nav_progress != nullptr) {
+                    if(!c.enabled) {
+                        lv_obj_add_flag(ui.nav_progress, LV_OBJ_FLAG_HIDDEN);
+                    } else {
+                        lv_obj_clear_flag(ui.nav_progress, LV_OBJ_FLAG_HIDDEN);
+                        apply_arc(ui.nav_progress, c, 440, c.opacity);
+                    }
+                }
+                break;
+            case MOTO_UI_COMPONENT_SPEED_ARC:
+                if(ui.nav_speed_arc_object != nullptr) {
+                    if(!c.enabled) {
+                        lv_obj_add_flag(ui.nav_speed_arc_object, LV_OBJ_FLAG_HIDDEN);
+                    } else {
+                        // Position the acceleration readout once, from
+                        // the arc geometry: per-frame alignment would let
+                        // it drift between otherwise identical renders.
+                        if(ui.nav_accel != nullptr) {
+                            const int offset =
+                                (same_side ? 408 : 440) / 6;
+                            int dx = 0;
+                            int dy = 0;
+                            switch(c.anchor) {
+                                case MOTO_UI_ARC_TOP:
+                                    dy = -offset;
+                                    break;
+                                case MOTO_UI_ARC_BOTTOM:
+                                    dy = offset;
+                                    break;
+                                case MOTO_UI_ARC_LEFT:
+                                    dx = -offset;
+                                    break;
+                                case MOTO_UI_ARC_RIGHT:
+                                    dx = offset;
+                                    break;
+                                default:
+                                    break;
+                            }
+                            lv_obj_align_to(ui.nav_accel,
+                                            ui.nav_speed_arc_object,
+                                            LV_ALIGN_CENTER, dx, dy);
+                        }
+                        lv_obj_clear_flag(ui.nav_speed_arc_object, LV_OBJ_FLAG_HIDDEN);
+                        apply_arc(ui.nav_speed_arc_object, c,
+                                  same_side ? 408 : 440, c.opacity);
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Music page visibility = user switch AND media capability.
+    ui.music_page_enabled =
+        ui.layout.music_page_enabled != 0 && ui.media_music_available;
+    update_page_dots();
+    align_accel_readout();
+    // The projection depends on the viewport height; the next motion frame
+    // picks it up through PhoneNavBridge's view configuration.
+    if(ui.nav_marker != nullptr) {
+        lv_obj_align(ui.nav_marker, LV_ALIGN_TOP_LEFT, px(163),
+                     px(static_cast<int>(map_height) * 196 / 232));
+    }
+}
+
+}  // namespace
+
+extern "C" void moto_nav_ui_apply_layout(const moto_ui_layout_t *layout) {
+    apply_layout_internal(layout);
+}
+
+extern "C" const moto_ui_layout_t *moto_nav_ui_current_layout(void) {
+    return &ui.layout;
 }
 
 extern "C" void moto_nav_ui_set_music_command_callback(
