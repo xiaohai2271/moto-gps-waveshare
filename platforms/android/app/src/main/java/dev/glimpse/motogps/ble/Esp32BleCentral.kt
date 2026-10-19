@@ -78,6 +78,8 @@ class Esp32BleCentral(
     private var pendingSceneRevision = 0L
     private var sceneAttempts = 0
     private var lastSceneEncoded: ByteArray? = null
+    /** Recent device command ids for the current session, oldest first. */
+    private val commandDeduper = DeviceCommandDeduper()
 
     private val heartbeatTicker = object : Runnable {
         override fun run() {
@@ -145,6 +147,7 @@ class Esp32BleCentral(
         numeric: LongArray,
         roadName: String,
         instruction: String,
+        priority: Boolean = false,
     ): Boolean {
         if (_state.value !is State.Connected) return false
         val payload = runCatching {
@@ -155,7 +158,9 @@ class Esp32BleCentral(
         }
         sendMessage(
             BleProtocol.MessageType.NAVIGATION_SNAPSHOT, payload,
-            withResponse = false, label = "nav-snapshot",
+            withResponse = false,
+            label = if (priority) "nav-page-echo" else "nav-snapshot",
+            priority = priority,
         )
         return true
     }
@@ -292,6 +297,7 @@ class Esp32BleCentral(
     override fun onReady() {
         logLine("服务发现完成，订阅 TX 成功，开始握手")
         val sessionId = generateSessionId()
+        commandDeduper.reset()
         val intent = handshake.start(sessionId, now())
         handshakeAttempts = 0
         lastHandshakeResendAtMs = now()
@@ -309,6 +315,7 @@ class Esp32BleCentral(
         ) {
             logLine("收到通知但握手未启动，补启动会话")
             val sessionId = generateSessionId()
+            commandDeduper.reset()
             handshakeAttempts = 0
             lastHandshakeResendAtMs = now()
             handleIntent(handshake.start(sessionId, now()))
@@ -337,6 +344,7 @@ class Esp32BleCentral(
         main.removeCallbacks(heartbeatTicker)
         handshake.onTransportLost()
         codec.resetReassembler()
+        commandDeduper.reset()
         outbound.clear()
         logLine("连接断开" + (reason?.let { "：$it" } ?: ""))
         if (userInitiatedDisconnect || targetAddress == null) {
@@ -387,11 +395,29 @@ class Esp32BleCentral(
             BleProtocol.MessageType.DEVICE_COMMAND -> {
                 val command = runCatching { codec.decodeDeviceCommand(message.payload) }
                     .getOrNull() ?: return
-                logLine("设备命令 kind=${command.kind} id=${command.commandId} page=${command.page}")
-                if (message.flags and BleProtocol.Flags.ACK_REQUESTED != 0) {
-                    sendAck(message.sequence, STATUS_OK, command.commandId)
+                // The protocol requires deduplication by (session_id, command_id):
+                // the display retransmits a command until it sees an ACK, so a
+                // lost ACK must not replay the gesture (a repeated page change
+                // snaps the UI back, a repeated play/pause toggles twice).
+                if (!commandDeduper.accept(command.commandId.toLong())) {
+                    if (message.flags and BleProtocol.Flags.ACK_REQUESTED != 0) {
+                        sendAck(message.sequence, STATUS_DUPLICATE, command.commandId)
+                    }
+                    logLine("重复设备命令 id=${command.commandId}，已忽略")
+                    return
                 }
-                commandListener?.invoke(command)
+                logLine("设备命令 kind=${command.kind} id=${command.commandId} page=${command.page}")
+                // Spec §4.3: the ACK is sent only after the action has been
+                // committed, so a retransmission can never slip in between the
+                // ACK and the actual state change.
+                val committed = runCatching { commandListener?.invoke(command) }.isSuccess
+                if (message.flags and BleProtocol.Flags.ACK_REQUESTED != 0) {
+                    sendAck(
+                        message.sequence,
+                        if (committed) STATUS_OK else STATUS_FAILED,
+                        command.commandId,
+                    )
+                }
             }
 
             else -> logLine("收到 type=${message.type} len=${message.payload.size}")
@@ -525,6 +551,7 @@ class Esp32BleCentral(
         withResponse: Boolean,
         applicationFlags: Int = 0,
         label: String,
+        priority: Boolean = false,
     ) {
         val frames = runCatching {
             codec.fragment(type, nextSequence(), payload, currentFrameSize(), applicationFlags)
@@ -532,7 +559,9 @@ class Esp32BleCentral(
             logLine("分片失败：${it.message}")
             return
         }
-        if (!outbound.enqueueMessage(frames, label)) {
+        if (priority) {
+            outbound.enqueueFront(frames, label)
+        } else if (!outbound.enqueueMessage(frames, label)) {
             logLine("发送队列溢出，已清空队列（需要重发完整路线几何）")
         }
         schedulePump()
@@ -589,5 +618,9 @@ class Esp32BleCentral(
         const val SCENE_ACK_TIMEOUT_MS = 3_000L
         const val MAX_SCENE_ATTEMPTS = 3
         const val STATUS_OK = 0
+        /** Protocol status for an already handled (session_id, command_id). */
+        const val STATUS_DUPLICATE = 4
+        /** Protocol status when the action could not be committed. */
+        const val STATUS_FAILED = 3
     }
 }

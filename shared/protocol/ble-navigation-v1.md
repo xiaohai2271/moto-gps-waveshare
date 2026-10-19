@@ -400,6 +400,22 @@ kind：0 PageSelected、1 Tap、2 LongPress、3 SwipeLeft、4 SwipeRight、5 Swi
 手机以 `(session_id, command_id)` 去重；成功、失败或重复都回复 Ack。UI 动作必须在
 成功提交后才 ACK Ok。
 
+### 页面切换以设备本地为准
+
+`PageSelected`、`SwipeLeft`、`SwipeRight` 描述的是设备**已经本地执行完**的手势：设备先
+切换自己的页面并渲染，然后才上报命令。手机必须把该命令当作同步提示，而不是切页的
+触发条件：
+
+- 手机把页面写入 `NavCore`，并在下一帧 NavigationSnapshot 的 `display_page` 中回显；
+  该回显是幂等的，设备此时已经在显示该页面。
+- 若设备等回显后才切页，当往返时延（快照 200 ms 节流 + 发送队列）超过两次滑动的
+  间隔时，下一次手势会基于旧页面计算目标，表现为页面跳到意料之外的索引。
+- 手机不得把 `display_page` 改写成设备未上报过的值，否则每一帧快照都会和本地切换
+  相互打架。
+
+因此页面回显对时序敏感：它绕过通常的 200 ms 快照节流，并插队到地图场景与路线几何
+之前发送。
+
 ## 7. Display Snapshot 到共享 NavSnapshot
 
 适配器必须做值转换，不得直接操作 `moto_ui_state_t`。推荐映射如下：

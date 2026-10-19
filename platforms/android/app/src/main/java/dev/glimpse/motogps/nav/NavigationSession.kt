@@ -110,7 +110,6 @@ class NavigationSession(
     private var lastMediaKey: String? = null
     private var compassHeading: Double? = null
     private var lastCompassPushAt = 0L
-    private var lastPageChangeAt = 0L
 
     init {
         central.commandListener = { command -> onDeviceCommand(command) }
@@ -326,12 +325,31 @@ class NavigationSession(
         }
         val current = engine.snapshot().displayPage
         if (target == current) return
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastPageChangeAt < PAGE_DEBOUNCE_MS) return
-        lastPageChangeAt = now
+        // No time-based debounce: the BLE layer already drops retransmissions by
+        // command_id. Dropping a legitimate second swipe here made the display
+        // fall back to the previous page on the next snapshot (a visible jump).
         runCatching { feedEngine(engine.selectPage(target)) }
-            .onSuccess { log("切换圆屏页面 → $target") }
+            .onSuccess {
+                log("切换圆屏页面 → $target")
+                // The firmware does not switch its own page on a gesture: it
+                // asks the phone and only shows the new page once a snapshot
+                // carrying that page arrives. Echo it immediately (twice, to
+                // survive a dropped frame) so a quick second swipe computes its
+                // next page from the new one instead of the stale one.
+                echoPageNow()
+                scope.launch {
+                    delay(PAGE_ECHO_MS)
+                    echoPageNow()
+                }
+            }
             .onFailure { log("切换页面失败：${it.message}") }
+    }
+
+    /** Bypasses the 200 ms snapshot throttle to acknowledge a page change. */
+    private fun echoPageNow() {
+        if (!_state.value.bleReady) return
+        lastSnapshotAt = SystemClock.elapsedRealtime()
+        runCatching { sendSnapshot(engine.snapshot()) }
     }
 
     /** Debug-only: inject a device gesture (e.g. swipe) for hardware checks. */
@@ -879,7 +897,7 @@ class NavigationSession(
         return 2 * r * kotlin.math.asin(kotlin.math.sqrt(h))
     }
 
-    private fun sendSnapshot(snapshot: EngineSnapshot) {
+    private fun sendSnapshot(snapshot: EngineSnapshot, priority: Boolean = false) {
         val now = SystemClock.elapsedRealtime()
         val flags = (if (snapshot.hasDestination) 1L else 0L) or
             (if (snapshot.hasUsableFix) 2L else 0L) or
@@ -913,7 +931,10 @@ class NavigationSession(
             (snapshot.crossTrackM * 10.0).roundToLong().coerceIn(0, 65_535),
             snapshot.roundaboutExit.toLong(),
         )
-        if (!central.sendNavigationSnapshot(numeric, snapshot.roadName, snapshot.instruction)) {
+        if (!central.sendNavigationSnapshot(
+                numeric, snapshot.roadName, snapshot.instruction, priority = priority,
+            )
+        ) {
             if (!_state.value.bleReady) logOnce("圆屏未连接，快照未发送")
         } else if (now - lastSnapshotDiagAt > 5_000) {
             lastSnapshotDiagAt = now
@@ -991,7 +1012,8 @@ class NavigationSession(
         const val COMMAND_MUSIC_TOGGLE = 17
         const val COMMAND_MUSIC_NEXT = 18
         const val COMMAND_MUSIC_LIKE = 19
-        const val PAGE_DEBOUNCE_MS = 600L
+        /** Delay before the second page echo, in case the first frame is lost. */
+        const val PAGE_ECHO_MS = 90L
         const val PREVIEW_ORIGIN_DRIFT_M = 120.0
         // 0 navigation, 1 speed, 2 compass, 3 music (remote control only).
         val SUPPORTED_PAGES = listOf(0, 1, 2, 3)

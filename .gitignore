@@ -44,3 +44,5 @@ platforms/android/*-log.txt
 .wrangler/
 
 platforms/android/app/.cxx/
+
+.gradle-home/

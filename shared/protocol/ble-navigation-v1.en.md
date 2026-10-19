@@ -442,6 +442,23 @@ already normalised, so the phone must not infer the direction from the coordinat
 The phone deduplicates by `(session_id, command_id)`; success, failure and duplicates all get an
 Ack reply. A UI action must be ACKed Ok only after a successful commit.
 
+### Page switching is local-first
+
+`PageSelected` / `SwipeLeft` / `SwipeRight` describe a gesture the display has already handled
+locally: the device switches its own page, renders it, and only then reports the command. The
+phone must treat the command as a synchronisation hint, not as the trigger for the switch:
+
+- The phone applies the page to `NavCore` and echoes it as `display_page` in the next
+  NavigationSnapshot. That echo is idempotent; the device is already showing the page.
+- A device that waited for the echo before switching would derive the next gesture from a stale
+  page whenever the round trip (snapshot throttle plus queueing) exceeded the swipe interval,
+  which shows up as pages jumping to an unexpected index.
+- The phone must not rewrite `display_page` to a value the device did not report; doing so fights
+  the local switch on every snapshot.
+
+Because of this ordering, a page echo is timing sensitive: it bypasses the normal 200 ms snapshot
+throttle and is queued ahead of map scenes and geometry.
+
 ## 7. Display Snapshot to the shared NavSnapshot
 
 The adapter must do value conversion and must not operate on `moto_ui_state_t` directly. The

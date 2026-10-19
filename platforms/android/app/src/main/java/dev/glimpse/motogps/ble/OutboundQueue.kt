@@ -31,6 +31,19 @@ class OutboundQueue(private val capacity: Int = 128) {
 
     fun poll(): Entry? = entries.removeFirstOrNull()
 
+    /**
+     * Inserts a whole message ahead of everything already queued. Used for the
+     * page-echo snapshot: the display only switches page when this frame
+     * arrives, so it must not wait behind a queued map scene or geometry.
+     */
+    fun enqueueFront(frames: List<ByteArray>, label: String) {
+        if (frames.isEmpty()) return
+        // Keep the message's own frame order while jumping the queue.
+        for (index in frames.indices.reversed()) {
+            entries.addFirst(Entry(frames[index], label))
+        }
+    }
+
     fun clear() {
         entries.clear()
     }
