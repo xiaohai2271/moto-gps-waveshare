@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 
@@ -85,10 +85,6 @@ typedef struct {
     uint8_t component_count;     /* 0..8 */
     moto_ui_component_layout_t components[MOTO_UI_LAYOUT_COMPONENT_COUNT];
 } moto_ui_layout_t;
-
-#ifdef __cplusplus
-}
-#endif
 
 typedef enum {
     MOTO_UI_ACQUIRING_FIX = 0,

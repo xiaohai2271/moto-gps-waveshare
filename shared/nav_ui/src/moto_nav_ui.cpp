@@ -1,4 +1,4 @@
-#include "moto_nav_ui.h"
+﻿#include "moto_nav_ui.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,7 +9,14 @@
 
 #include "lvgl.h"
 
-LV_FONT_DECLARE(moto_font_nav_16);
+// The generated font sources are plain C translation units, so their public
+// descriptors carry C linkage. Declaring them with extern "C" here keeps the
+// MSVC host build (which compiles .c as C and this file as C++) linkable;
+// LV_FONT_DECLARE alone would mangle the symbol under /std:c++17.
+extern "C" {
+extern const lv_font_t moto_font_nav_16;
+extern const lv_font_t moto_font_nav_20;
+}
 
 namespace {
 
@@ -358,10 +365,13 @@ void gesture_event(lv_event_t *) {
                                         : MOTO_UI_PAGE_COMPASS;
     }
     const auto requested = static_cast<moto_ui_page_t>(next);
+    // Switch locally first: waiting for the phone's page echo (snapshot
+    // throttle + BLE queue) made every fast swipe derive its target from a
+    // stale page, which showed up as pages jumping to random indices. The
+    // phone echo below is then an idempotent confirmation.
+    show_page(requested, true);
     if(ui.page_callback != nullptr) {
         ui.page_callback(requested, ui.page_callback_context);
-    } else {
-        show_page(requested, true);
     }
     reveal_page_dots();
     lv_indev_wait_release(indev);
@@ -2001,10 +2011,11 @@ extern "C" void moto_nav_ui_create(void) {
 
 extern "C" void moto_nav_ui_set_state(const moto_ui_state_t *state) {
     if(state == nullptr || ui.screen == nullptr) return;
-    show_page(state->page);
-    // Hidden pages do not need to be invalidated. Page changes immediately
-    // apply a fresh snapshot through PhoneNavBridge, so this keeps every page
-    // correct while avoiding three full page redraws per navigation update.
+    // The page is owned by the on-device gesture handler (gesture_event calls
+    // show_page directly). Phone snapshots echo display_page back with BLE
+    // latency; applying it here reverted the freshly switched page for one
+    // frame on every swipe — the visible "jump back to the old page".
+    // Boot-time and test entry points still use moto_nav_ui_set_page().
     switch(ui.page) {
         case MOTO_UI_PAGE_NAVIGATION: update_navigation(state); break;
         case MOTO_UI_PAGE_SPEED: update_speedometer(state); break;

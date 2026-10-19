@@ -15,13 +15,20 @@ add_library(moto_nav_ui STATIC
     src/moto_nav_ui.cpp
 )
 
+# LV_FONT_DECLARE only declares a font; every generated font must be compiled
+# into this target so the native host link resolves the symbol.
+
 target_include_directories(moto_nav_ui PUBLIC include)
 target_link_libraries(moto_nav_ui PUBLIC lvgl)
 target_compile_features(moto_nav_ui PUBLIC cxx_std_17)
-target_compile_options(moto_nav_ui PRIVATE
-    $<$<COMPILE_LANGUAGE:CXX>:-Wall>
-    $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
-    $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
-    $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
-    $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
-)
+# GCC/Clang-only hygiene flags. MSVC has no -Wextra/-fno-* spellings, so the
+# Windows host test build (build/native, MSVC generator) must skip them.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(moto_nav_ui PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+        $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+        $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+    )
+endif()

@@ -1,4 +1,4 @@
-#include "phone_nav_bridge.h"
+﻿#include "phone_nav_bridge.h"
 #include "phone_nav_bridge_test_probe.hpp"
 #include "demo_fixture/jinan_big_data_demo.hpp"
 
@@ -329,9 +329,13 @@ void test_demo_uses_the_production_presenter_path() {
 
   CHECK(moto::test::phone_nav_bridge_last_demo_active());
   CHECK(moto::test::phone_nav_bridge_last_route_point_count() >= 2);
-  CHECK(moto::test::phone_nav_bridge_last_road_point_count() ==
+  // The 232 px default map viewport clips context behind the rider; the demo
+  // fixture itself may contain more points than fit on screen.
+  CHECK(moto::test::phone_nav_bridge_last_road_point_count() > 0);
+  CHECK(moto::test::phone_nav_bridge_last_road_point_count() <=
         moto::demo::jinan_big_data::kRoadPoints.size());
-  CHECK(moto::test::phone_nav_bridge_last_road_polyline_count() ==
+  CHECK(moto::test::phone_nav_bridge_last_road_polyline_count() > 0);
+  CHECK(moto::test::phone_nav_bridge_last_road_polyline_count() <=
         moto::demo::jinan_big_data::kRoads.size());
   CHECK(moto::test::phone_nav_bridge_apply_count() >= 2);
 
@@ -384,9 +388,11 @@ void test_ios_demo_token_attaches_context_and_live_route_clears_it() {
   CHECK(moto::test::phone_nav_bridge_apply_count() == before_pair);
   pump(bridge);
   CHECK(moto::test::phone_nav_bridge_apply_count() == before_pair + 1);
-  CHECK(moto::test::phone_nav_bridge_last_road_point_count() ==
+  CHECK(moto::test::phone_nav_bridge_last_road_point_count() > 0);
+  CHECK(moto::test::phone_nav_bridge_last_road_point_count() <=
         moto::demo::jinan_big_data::kRoadPoints.size());
-  CHECK(moto::test::phone_nav_bridge_last_road_polyline_count() ==
+  CHECK(moto::test::phone_nav_bridge_last_road_polyline_count() > 0);
+  CHECK(moto::test::phone_nav_bridge_last_road_polyline_count() <=
         moto::demo::jinan_big_data::kRoads.size());
 
   snapshot.flags = 0;

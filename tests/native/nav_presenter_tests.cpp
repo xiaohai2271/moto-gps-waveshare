@@ -1,4 +1,4 @@
-#include "moto_nav_presenter.hpp"
+﻿#include "moto_nav_presenter.hpp"
 
 #ifdef MOTO_NAV_UI_TEST_STUB
 #include "moto_nav_ui_test_probe.hpp"
@@ -213,6 +213,7 @@ void test_metrics_are_rounded_clamped_and_deterministic() {
 
 void test_heading_up_route_projection_keeps_rider_fixed() {
   NavPresenter presenter;
+  presenter.set_view_config(false, MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT, 100);
   NavSnapshot snapshot;
   snapshot.state = NavState::Navigating;
   snapshot.heading_deg = 90.0F;
@@ -227,14 +228,84 @@ void test_heading_up_route_projection_keeps_rider_fixed() {
   const moto_ui_state_t& state = presenter.ui_state();
   CHECK(state.route_point_count == 2);
   constexpr int rider_x = MOTO_UI_CANVAS_WIDTH / 2;
-  constexpr int rider_y =
-      (196 * MOTO_UI_CANVAS_HEIGHT + 180) / 360;
+  // Default 232 px map height puts the rider at 196 px (84.5% down).
+  constexpr int rider_y = 196;
   CHECK(state.route_points[0].x == rider_x);
   CHECK(state.route_points[0].y == rider_y);
   // Facing east means an eastbound route is drawn straight ahead/up while
   // the vehicle marker itself remains at the fixed shared-view anchor.
   CHECK(std::abs(state.route_points[1].x - rider_x) <= 1);
   CHECK(state.route_points[1].y < state.route_points[0].y);
+}
+
+void test_default_view_is_north_up_and_configurable() {
+  NavPresenter presenter;
+  // The product default is north-up (docs §4.7), not heading-up.
+  CHECK(presenter.north_up());
+  CHECK(presenter.map_height_px() == MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT);
+
+  NavSnapshot snapshot;
+  snapshot.state = NavState::Navigating;
+  snapshot.heading_deg = 90.0F;
+  snapshot.has_route_view = true;
+  snapshot.route_view_origin = {31.2304, 121.4737};
+  snapshot.route_view_point_count = 2;
+  snapshot.route_view_points[0] = snapshot.route_view_origin;
+  snapshot.route_view_points[1] = {31.2304, 121.4747};
+  presenter.update(snapshot);
+
+  constexpr int rider_x = MOTO_UI_CANVAS_WIDTH / 2;
+  constexpr int rider_y = 196;
+  CHECK(presenter.ui_state().heading_deg == 90);
+  CHECK(presenter.ui_state().route_points[0].x == rider_x);
+  CHECK(presenter.ui_state().route_points[0].y == rider_y);
+  // North-up leaves the map fixed: the eastbound point stays east (right).
+  CHECK(presenter.ui_state().route_points[1].x > rider_x);
+  CHECK(std::abs(presenter.ui_state().route_points[1].y - rider_y) <= 1);
+
+  // Heading-up rotates the map under the rider: the same point goes straight
+  // ahead (up on screen) instead.
+  presenter.set_view_config(false, MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT, 100);
+  presenter.update(snapshot);
+  CHECK(presenter.ui_state().route_points[1].y < rider_y);
+  CHECK(std::abs(presenter.ui_state().route_points[1].x - rider_x) <= 1);
+
+  // Map height moves the rider anchor; zoom doubles the metre-to-pixel scale.
+  presenter.set_view_config(true, 320, 200);
+  presenter.update(snapshot);
+  CHECK(presenter.ui_state().route_points[0].y == (320 * 196) / 232);
+  CHECK(presenter.ui_state().route_points[1].x > rider_x + 80);
+}
+
+void test_map_height_clips_route_and_road_context() {
+  NavPresenter presenter;
+  presenter.set_view_config(true, 160, 100);
+  NavSnapshot snapshot;
+  snapshot.state = NavState::Navigating;
+  snapshot.heading_deg = 0.0F;
+  snapshot.has_route_view = true;
+  snapshot.route_view_origin = {31.2304, 121.4737};
+  snapshot.route_view_point_count = 3;
+  snapshot.route_view_points[0] = snapshot.route_view_origin;
+  snapshot.route_view_points[1] = {31.2308, 121.4737};
+  // ~1 km south is far below a 160 px viewport and must be clipped.
+  snapshot.route_view_points[2] = {31.2214, 121.4737};
+  snapshot.has_road_context = true;
+  snapshot.road_context_point_count = 3;
+  snapshot.road_context_points[0] = snapshot.route_view_origin;
+  snapshot.road_context_points[1] = {31.2308, 121.4737};
+  snapshot.road_context_points[2] = {31.2214, 121.4737};
+  snapshot.road_context_polyline_count = 1;
+  snapshot.road_context_polylines[0] = {0, 3};
+  presenter.update(snapshot);
+
+  const moto_ui_state_t& state = presenter.ui_state();
+  // The clipped polyline keeps its two visible points and drops the far one.
+  CHECK(state.route_point_count == 2);
+  CHECK(state.road_point_count == 2);
+  CHECK(state.road_polyline_count == 1);
+  CHECK(state.road_points[1].y >= 0);
+  CHECK(state.road_points[1].y < 160);
 }
 
 void test_non_finite_heading_keeps_map_projection_finite() {
@@ -253,14 +324,14 @@ void test_non_finite_heading_keeps_map_projection_finite() {
   CHECK(state.heading_deg == 0);
   CHECK(state.route_point_count == 2);
   constexpr int rider_x = MOTO_UI_CANVAS_WIDTH / 2;
-  constexpr int rider_y =
-      (196 * MOTO_UI_CANVAS_HEIGHT + 180) / 360;
+  constexpr int rider_y = 196;
   CHECK(state.route_points[0].x == rider_x);
   CHECK(state.route_points[0].y == rider_y);
 }
 
 void test_real_road_context_uses_the_same_heading_up_transform() {
   NavPresenter presenter;
+  presenter.set_view_config(false, MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT, 100);
   NavSnapshot snapshot;
   snapshot.state = NavState::Navigating;
   snapshot.heading_deg = 90.0F;
@@ -487,6 +558,8 @@ int main() {
   test_all_traffic_levels();
   test_metrics_are_rounded_clamped_and_deterministic();
   test_heading_up_route_projection_keeps_rider_fixed();
+  test_default_view_is_north_up_and_configurable();
+  test_map_height_clips_route_and_road_context();
   test_non_finite_heading_keeps_map_projection_finite();
   test_real_road_context_uses_the_same_heading_up_transform();
   test_map_scene_classes_buildings_and_capacity_share_route_transform();

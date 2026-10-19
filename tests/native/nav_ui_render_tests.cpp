@@ -1,4 +1,4 @@
-// Deterministic host-side rendering tests for the LVGL navigation UI.
+﻿// Deterministic host-side rendering tests for the LVGL navigation UI.
 // A headless LVGL display renders the real moto_nav_ui into an RGB565
 // framebuffer; frames are hashed to verify bit-exact determinism, clean page
 // transitions and label/geometry residue cleanup.
@@ -14,6 +14,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "../../shared/nav_ui/src/accel_filter.h"
 
 namespace {
 
@@ -122,8 +124,8 @@ moto_ui_state_t base_state() {
   state.speed_kph = 48;
   state.speed_limit_kph = 50;
   state.heading_deg = 90;
-  state.road_name = "经十路";
-  state.next_road_name = "青年大街";
+  state.road_name = "Road";
+  state.next_road_name = "Next Road";
   return state;
 }
 
@@ -222,8 +224,8 @@ void test_music_page_state_and_fallback() {
   music.playing = 1;
   music.like_available = 1;
   music.source_name = "NetEase";
-  music.track_title = "公路之歌";
-  music.artist_name = "新裤子";
+  music.track_title = "Road Song";
+  music.artist_name = "New Pants";
   moto_nav_ui_set_music_state(&music);
   const Frame titled = capture();
 
@@ -369,7 +371,7 @@ void test_motion_frames_interpolate_then_settle_without_residue() {
   const auto direct = capture();
   // Compare the map viewport. The page dots below it expire independently at
   // five seconds, which may fall between the two captured frames.
-  constexpr int map_height = (232 * kWidth + 180) / 360;
+  constexpr int map_height = MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT;
   constexpr std::size_t map_bytes = kWidth * map_height * (LV_COLOR_DEPTH / 8);
   CHECK(std::equal(direct.bytes.begin(), direct.bytes.begin() + map_bytes,
                    settled_bytes.begin()));
