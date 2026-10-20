@@ -77,10 +77,16 @@ CONFIG_BT_NIMBLE_HCI_EVT_HI_BUF_COUNT=20
 CONFIG_BT_NIMBLE_HCI_EVT_LO_BUF_COUNT=4
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+# Device-verified on the 1.75C: with four static RX buffers the driver init
+# intermittently failed with "Expected to init 4 rx buffer, actual is 3" once
+# the BLE host and the LVGL render task were already resident; the same
+# shortfall then starved the QMI8658 heading task (ESP_ERR_NO_MEM). Three
+# static + six dynamic buffers still cover a provisioning/health link and
+# leave enough internal RAM for the power and heading workers.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=3
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=2
-CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_MGMT_SBUF_NUM=16
 CONFIG_ESP_WIFI_CSI_ENABLED=n
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n

@@ -214,6 +214,19 @@ extern "C" void app_main(void) {
     ESP_LOGW(kTag, "PWR long-hold task could not start");
   }
 
+  // The heading worker also allocates a 4 KiB stack from internal RAM. On the
+  // 1.75C the WiFi driver's pool leaves the largest free block below 4 KiB once
+  // it is up (device-observed "QMI8658 heading assist could not start:
+  // ESP_ERR_NO_MEM"), so start it before esp_wifi_init() as well. It only uses
+  // the board I2C bus, which board_port_init() has already brought up.
+  static MotionHeadingSensor motion_sensor;
+  const esp_err_t motion_result = motion_sensor.start(update_motion_heading,
+                                                      &phone_bridge);
+  if (motion_result != ESP_OK) {
+    ESP_LOGW(kTag, "QMI8658 heading assist could not start: %s",
+             esp_err_to_name(motion_result));
+  }
+
   // WiFi provisioning initializes NVS itself (its own idempotent prepare) and
   // restores the persisted hotspot credentials so a reboot reconnects.
   //
@@ -223,14 +236,6 @@ extern "C" void app_main(void) {
   // controller ("BLE_INIT: Malloc failed" -> EMI assert -> watchdog reset),
   // so the BLE stack always gets first claim on that memory.
   phone_bridge.start_wifi();
-
-  static MotionHeadingSensor motion_sensor;
-  const esp_err_t motion_result = motion_sensor.start(update_motion_heading,
-                                                      &phone_bridge);
-  if (motion_result != ESP_OK) {
-    ESP_LOGW(kTag, "QMI8658 heading assist could not start: %s",
-             esp_err_to_name(motion_result));
-  }
 
   // Demo generation fills the retained snapshot in place, but geometry and
   // LVGL projection still use deeper C++ call frames than a trivial task.
