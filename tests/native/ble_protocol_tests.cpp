@@ -250,6 +250,97 @@ UiLayoutState ui_layout_state_fixture() {
   return value;
 }
 
+WifiConfig wifi_config_fixture() {
+  WifiConfig value;
+  value.action = WifiSaveAndConnect;
+  value.flags = WifiAutoReconnect;
+  value.ssid = "MotoHotspot_2G";
+  value.password = "ride-more-worry-less";
+  return value;
+}
+
+WifiStatus wifi_status_fixture() {
+  WifiStatus value;
+  value.state = WifiConnected;
+  value.rssi_dbm = -52;
+  value.error = WifiErrorNone;
+  value.ipv4_le = 0x0100A8C0U;  // 192.168.0.1 little-endian
+  value.ssid = "MotoHotspot_2G";
+  return value;
+}
+
+WifiScanRequest wifi_scan_request_fixture() {
+  WifiScanRequest value;
+  value.request_id = 0xBEEF;
+  return value;
+}
+
+WifiScanResult wifi_scan_result_fixture() {
+  WifiScanResult value;
+  value.request_id = 0xBEEF;
+  value.access_points = {
+      WifiScanAp{-40, WifiAuthWpa2Wpa3, "MotoHotspot_2G"},
+      WifiScanAp{-67, WifiAuthWpa2, "Home_5G_Upper"},
+      WifiScanAp{-81, WifiAuthOpen, "CoffeeShop"},
+  };
+  return value;
+}
+
+// Round-trips each P4 WiFi message and asserts the documented failure modes.
+void check_wifi_round_trips() {
+  const std::vector<Message> messages = {
+      Message{wifi_config_fixture()},
+      Message{wifi_status_fixture()},
+      Message{wifi_scan_request_fixture()},
+      Message{wifi_scan_result_fixture()},
+  };
+  for (const Message& message : messages) {
+    const BytesResult encoded = encode_message(message);
+    CHECK(encoded.ok());
+    if (!encoded.ok()) {
+      continue;
+    }
+    const MessageResult decoded =
+        decode_message(message_type(message), ByteView(encoded.value));
+    CHECK(decoded.ok());
+    if (decoded.ok()) {
+      CHECK(decoded.value == message);
+    }
+  }
+
+  // WifiConfig validation: empty SSID, over-long password, reserved flags.
+  WifiConfig bad = wifi_config_fixture();
+  bad.ssid.clear();
+  CHECK(encode_message(Message{bad}).error == Error::StringTooLong);
+  bad = wifi_config_fixture();
+  bad.password.assign(kMaxWifiPasswordLen + 1, 'x');
+  CHECK(encode_message(Message{bad}).error == Error::StringTooLong);
+  bad = wifi_config_fixture();
+  bad.flags = 0xFFU;
+  CHECK(encode_message(Message{bad}).error == Error::InvalidEnum);
+  bad = wifi_config_fixture();
+  bad.action = WifiForget;
+  // Disconnect/forget must not carry credentials.
+  CHECK(encode_message(Message{bad}).error == Error::OutOfRange);
+  bad.action = WifiForget;
+  bad.ssid.clear();
+  bad.password.clear();
+  CHECK(encode_message(Message{bad}).ok());
+
+  // WifiScanResult: max 16 APs, unknown auth rejected.
+  WifiScanResult scan = wifi_scan_result_fixture();
+  scan.access_points.assign(kMaxWifiScanResults + 1,
+                            WifiScanAp{-50, WifiAuthWpa2, "x"});
+  CHECK(encode_message(Message{scan}).error == Error::TooManyItems);
+  scan = wifi_scan_result_fixture();
+  scan.access_points = {WifiScanAp{-50, 9, "weird"}};
+  CHECK(encode_message(Message{scan}).error == Error::InvalidEnum);
+  scan = wifi_scan_result_fixture();
+  scan.access_points.clear();
+  // Empty scan result is valid (nothing in range).
+  CHECK(encode_message(Message{scan}).ok());
+}
+
 std::string hex(ByteView bytes) {
   std::ostringstream output;
   output << std::hex << std::setfill('0');
@@ -914,10 +1005,8 @@ void test_ui_layout_decode_failures() {
   CHECK(decode_message(static_cast<MessageType>(0xFF),
                        ByteView(payload)).error ==
         Error::UnknownMessageType);
-  // 0x17 is reserved for WifiConfig in P4 and must stay unknown for now.
-  CHECK(decode_message(static_cast<MessageType>(0x17),
-                       ByteView(payload)).error ==
-        Error::UnknownMessageType);
+  // 0x17+ are the P4 WiFi provisioning messages (docs §5.5).
+  check_wifi_round_trips();
 
   const Bytes state_payload =
       encode_or_fail(Message{ui_layout_state_fixture()});

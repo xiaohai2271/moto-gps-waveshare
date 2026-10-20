@@ -126,6 +126,10 @@ enum class MessageType : std::uint8_t {
   MapScene = 0x14,
   UiLayout = 0x15,
   UiLayoutState = 0x16,
+  WifiConfig = 0x17,
+  WifiStatus = 0x18,
+  WifiScanRequest = 0x19,
+  WifiScanResult = 0x1A,
   DeviceCommand = 0x20,
 };
 
@@ -696,6 +700,91 @@ struct UiLayoutState {
   bool operator==(const UiLayoutState& rhs) const noexcept;
 };
 
+// --- WiFi provisioning (docs/NAV_LAYOUT_EDITOR_PLAN.md §5.5) ---------------
+
+enum WifiConfigAction : std::uint8_t {
+  WifiSaveAndConnect = 0,
+  WifiConnectTemporary = 1,
+  WifiDisconnect = 2,
+  WifiForget = 3,
+};
+
+enum WifiConfigFlag : std::uint8_t {
+  WifiHiddenSsid = 1U << 0U,
+  WifiAutoReconnect = 1U << 1U,
+};
+
+constexpr std::uint8_t kKnownWifiConfigFlags =
+    WifiHiddenSsid | WifiAutoReconnect;
+
+constexpr std::size_t kMaxWifiSsidLen = 32;
+constexpr std::size_t kMaxWifiPasswordLen = 64;
+
+struct WifiConfig {
+  std::uint8_t action = WifiSaveAndConnect;
+  std::uint8_t flags = 0;
+  std::string ssid;
+  std::string password;
+
+  bool operator==(const WifiConfig& rhs) const noexcept;
+};
+
+enum WifiState : std::uint8_t {
+  WifiOff = 0,
+  WifiConnecting = 1,
+  WifiConnected = 2,
+  WifiFailed = 3,
+  WifiNoCredentials = 4,
+};
+
+enum WifiError : std::uint8_t {
+  WifiErrorNone = 0,
+  WifiErrorAuth = 1,
+  WifiErrorSsidNotFound = 2,
+  WifiErrorTimeout = 3,
+  WifiErrorInternal = 4,
+};
+
+struct WifiStatus {
+  std::uint8_t state = WifiOff;
+  std::int8_t rssi_dbm = 0;
+  std::uint8_t error = WifiErrorNone;
+  std::uint32_t ipv4_le = 0;
+  std::string ssid;
+
+  bool operator==(const WifiStatus& rhs) const noexcept;
+};
+
+struct WifiScanRequest {
+  std::uint16_t request_id = 0;
+
+  bool operator==(const WifiScanRequest& rhs) const noexcept;
+};
+
+enum WifiAuth : std::uint8_t {
+  WifiAuthOpen = 0,
+  WifiAuthWpa2 = 1,
+  WifiAuthWpa3 = 2,
+  WifiAuthWpa2Wpa3 = 3,
+};
+
+struct WifiScanAp {
+  std::int8_t rssi_dbm = 0;
+  std::uint8_t auth = WifiAuthOpen;
+  std::string ssid;
+
+  bool operator==(const WifiScanAp& rhs) const noexcept;
+};
+
+constexpr std::size_t kMaxWifiScanResults = 16;
+
+struct WifiScanResult {
+  std::uint16_t request_id = 0;
+  std::vector<WifiScanAp> access_points;
+
+  bool operator==(const WifiScanResult& rhs) const noexcept;
+};
+
 using Message = std::variant<ConnectionStatus,
                              Heartbeat,
                              Ack,
@@ -706,6 +795,10 @@ using Message = std::variant<ConnectionStatus,
                              MapScene,
                              UiLayout,
                              UiLayoutState,
+                             WifiConfig,
+                             WifiStatus,
+                             WifiScanRequest,
+                             WifiScanResult,
                              DeviceCommand>;
 
 using MessageResult = Result<Message>;

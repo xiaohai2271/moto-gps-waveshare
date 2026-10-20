@@ -603,6 +603,53 @@ Error validate(const UiLayoutState& value) {
   return Error::None;
 }
 
+Error validate(const WifiConfig& value) {
+  if (value.action > WifiForget ||
+      (value.flags & ~kKnownWifiConfigFlags) != 0U) {
+    return Error::InvalidEnum;
+  }
+  if (value.action == WifiDisconnect || value.action == WifiForget) {
+    // Disconnect/forget carry no credentials.
+    return value.ssid.empty() && value.password.empty()
+               ? Error::None
+               : Error::OutOfRange;
+  }
+  if (value.ssid.empty() || value.ssid.size() > kMaxWifiSsidLen) {
+    return Error::StringTooLong;
+  }
+  if (value.password.size() > kMaxWifiPasswordLen) {
+    return Error::StringTooLong;
+  }
+  return Error::None;
+}
+
+Error validate(const WifiStatus& value) {
+  if (value.state > WifiNoCredentials || value.error > WifiErrorInternal) {
+    return Error::InvalidEnum;
+  }
+  if (value.ssid.size() > kMaxWifiSsidLen) {
+    return Error::StringTooLong;
+  }
+  return Error::None;
+}
+
+Error validate(const WifiScanRequest& value) {
+  return value.request_id == 0 ? Error::OutOfRange : Error::None;
+}
+
+Error validate(const WifiScanResult& value) {
+  if (value.access_points.size() > kMaxWifiScanResults) {
+    return Error::TooManyItems;
+  }
+  for (const WifiScanAp& ap : value.access_points) {
+    if (ap.auth > WifiAuthWpa2Wpa3 ||
+        ap.ssid.empty() || ap.ssid.size() > kMaxWifiSsidLen) {
+      return Error::InvalidEnum;
+    }
+  }
+  return Error::None;
+}
+
 template <typename T>
 BytesResult encode_payload(const T& value) {
   const Error validation = validate(value);
@@ -772,6 +819,27 @@ BytesResult encode_payload(const T& value) {
     writer.u8(value.supported_mask);
     writer.u8(value.flags);
     writer.u16(value.reserved);
+  } else if constexpr (std::is_same_v<T, WifiConfig>) {
+    writer.u8(value.action);
+    writer.u8(value.flags);
+    writer.string_u8(value.ssid);
+    writer.string_u8(value.password);
+  } else if constexpr (std::is_same_v<T, WifiStatus>) {
+    writer.u8(value.state);
+    writer.u8(static_cast<std::uint8_t>(value.rssi_dbm));
+    writer.u8(value.error);
+    writer.u32(value.ipv4_le);
+    writer.string_u8(value.ssid);
+  } else if constexpr (std::is_same_v<T, WifiScanRequest>) {
+    writer.u16(value.request_id);
+  } else if constexpr (std::is_same_v<T, WifiScanResult>) {
+    writer.u16(value.request_id);
+    writer.u8(static_cast<std::uint8_t>(value.access_points.size()));
+    for (const WifiScanAp& ap : value.access_points) {
+      writer.u8(static_cast<std::uint8_t>(ap.rssi_dbm));
+      writer.u8(ap.auth);
+      writer.string_u8(ap.ssid);
+    }
   }
   return {writer.take(), Error::None, 0};
 }
@@ -1121,6 +1189,70 @@ MessageResult decode_ui_layout_state(ByteView payload) {
     value.flags = reader.u8();
     value.reserved = reader.u16();
     reader.require_end();
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_wifi_config(ByteView payload) {
+  Reader reader(payload);
+  WifiConfig value;
+  if (begin_payload(reader)) {
+    value.action = reader.u8();
+    value.flags = reader.u8();
+    value.ssid = reader.string_u8(kMaxWifiSsidLen);
+    value.password = reader.string_u8(kMaxWifiPasswordLen);
+    reader.require_end();
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_wifi_status(ByteView payload) {
+  Reader reader(payload);
+  WifiStatus value;
+  if (begin_payload(reader)) {
+    value.state = reader.u8();
+    value.rssi_dbm = static_cast<std::int8_t>(reader.u8());
+    value.error = reader.u8();
+    value.ipv4_le = reader.u32();
+    value.ssid = reader.string_u8(kMaxWifiSsidLen);
+    reader.require_end();
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_wifi_scan_request(ByteView payload) {
+  Reader reader(payload);
+  WifiScanRequest value;
+  if (begin_payload(reader)) {
+    value.request_id = reader.u16();
+    reader.require_end();
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_wifi_scan_result(ByteView payload) {
+  Reader reader(payload);
+  WifiScanResult value;
+  if (begin_payload(reader)) {
+    value.request_id = reader.u16();
+    const std::size_t count = reader.u8();
+    if (reader.ok() && count > kMaxWifiScanResults) {
+      reader.fail(Error::TooManyItems);
+    }
+    if (reader.ok()) {
+      value.access_points.reserve(count);
+      for (std::size_t i = 0; i < count; ++i) {
+        WifiScanAp ap;
+        ap.rssi_dbm = static_cast<std::int8_t>(reader.u8());
+        ap.auth = reader.u8();
+        ap.ssid = reader.string_u8(kMaxWifiSsidLen);
+        if (!reader.ok()) {
+          break;
+        }
+        value.access_points.push_back(std::move(ap));
+      }
+      reader.require_end();
+    }
   }
   return decoded_result(std::move(value), reader);
 }
@@ -1703,6 +1835,28 @@ bool UiLayoutState::operator==(const UiLayoutState& rhs) const noexcept {
                   rhs.flags, rhs.reserved);
 }
 
+bool WifiConfig::operator==(const WifiConfig& rhs) const noexcept {
+  return std::tie(action, flags, ssid, password) ==
+         std::tie(rhs.action, rhs.flags, rhs.ssid, rhs.password);
+}
+
+bool WifiStatus::operator==(const WifiStatus& rhs) const noexcept {
+  return std::tie(state, rssi_dbm, error, ipv4_le, ssid) ==
+         std::tie(rhs.state, rhs.rssi_dbm, rhs.error, rhs.ipv4_le, rhs.ssid);
+}
+
+bool WifiScanRequest::operator==(const WifiScanRequest& rhs) const noexcept {
+  return request_id == rhs.request_id;
+}
+
+bool WifiScanAp::operator==(const WifiScanAp& rhs) const noexcept {
+  return rssi_dbm == rhs.rssi_dbm && auth == rhs.auth && ssid == rhs.ssid;
+}
+
+bool WifiScanResult::operator==(const WifiScanResult& rhs) const noexcept {
+  return request_id == rhs.request_id && access_points == rhs.access_points;
+}
+
 MessageType message_type(const Message& message) noexcept {
   return std::visit(
       [](const auto& value) {
@@ -1727,6 +1881,14 @@ MessageType message_type(const Message& message) noexcept {
           return MessageType::UiLayout;
         } else if constexpr (std::is_same_v<T, UiLayoutState>) {
           return MessageType::UiLayoutState;
+        } else if constexpr (std::is_same_v<T, WifiConfig>) {
+          return MessageType::WifiConfig;
+        } else if constexpr (std::is_same_v<T, WifiStatus>) {
+          return MessageType::WifiStatus;
+        } else if constexpr (std::is_same_v<T, WifiScanRequest>) {
+          return MessageType::WifiScanRequest;
+        } else if constexpr (std::is_same_v<T, WifiScanResult>) {
+          return MessageType::WifiScanResult;
         } else {
           return MessageType::DeviceCommand;
         }
@@ -1756,6 +1918,12 @@ MessageResult decode_message(MessageType type, ByteView payload) {
     case MessageType::UiLayout: return decode_ui_layout(payload);
     case MessageType::UiLayoutState:
       return decode_ui_layout_state(payload);
+    case MessageType::WifiConfig: return decode_wifi_config(payload);
+    case MessageType::WifiStatus: return decode_wifi_status(payload);
+    case MessageType::WifiScanRequest:
+      return decode_wifi_scan_request(payload);
+    case MessageType::WifiScanResult:
+      return decode_wifi_scan_result(payload);
     case MessageType::DeviceCommand:
       return decode_device_command(payload);
   }
