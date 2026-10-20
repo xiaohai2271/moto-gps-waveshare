@@ -20,6 +20,7 @@
 extern "C" {
 extern const lv_font_t moto_font_nav_16;
 extern const lv_font_t moto_font_nav_20;
+extern const lv_font_t moto_font_nav_28;
 }
 
 // Platform-neutral trace hook: the shared build (web/iOS/host tests) leaves it
@@ -279,8 +280,7 @@ void reset_ui_state() {
 
 /** §4.10 default layout; mirrors Android LayoutDefaults byte for byte. */
 moto_ui_layout_t default_layout() {
-    moto_ui_layout_t layout{};
-    layout.north_up = 1;
+    moto_ui_layout_t layout{};    layout.north_up = 1;
     layout.music_page_enabled = 1;
     layout.map_visible = 1;
     layout.theme_id = 0;
@@ -370,8 +370,12 @@ std::uint16_t clamp_span(std::uint16_t span_deg) {
 void place_component(lv_obj_t *object, const moto_ui_component_layout_t &c) {
     int width = 0, height = 0;
     component_box(c.id, c.size, width, height);
-    if(width > 0) lv_obj_set_size(object, px(width), px(height));
-    lv_obj_set_pos(object, px(c.x), px(c.y));
+    // Layout coordinates and the §4.3 size table are already expressed in the
+    // 466 px canvas space (see component_box and docs §4.2/§4.3). They must not
+    // go through px(), which rescales the legacy 360 px design space: doing so
+    // pushed y=390 to 505 (off-screen) and doubled the text boxes.
+    if(width > 0) lv_obj_set_size(object, width, height);
+    lv_obj_set_pos(object, c.x, c.y);
 }
 
 // Arc ids are the only components whose geometry is decided by the arc rules
@@ -383,15 +387,16 @@ bool layout_component_is_arc(std::uint8_t id) {
 
 void apply_arc(lv_obj_t *arc, const moto_ui_component_layout_t &c, int diameter,
                std::uint8_t opacity) {
-    lv_obj_set_size(arc, px(diameter), px(diameter));
+    // 440/408 are 466-canvas diameters (§4.3); they are used verbatim so the
+    // arc radius matches the editor preview instead of growing 1.29x.
+    lv_obj_set_size(arc, diameter, diameter);
     lv_obj_align(arc, LV_ALIGN_CENTER, 0, 0);
     const int center = anchor_center_angle(c.anchor);
     const int span = clamp_span(c.span_deg);
     lv_arc_set_rotation(arc, 0);
     lv_arc_set_bg_angles(arc, center - span / 2, center + span / 2);
-    lv_obj_set_style_arc_width(arc, px(arc_width_for_size(c.size)),
-                               LV_PART_MAIN);
-    lv_obj_set_style_arc_width(arc, px(arc_width_for_size(c.size)),
+    lv_obj_set_style_arc_width(arc, arc_width_for_size(c.size), LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, arc_width_for_size(c.size),
                                LV_PART_INDICATOR);
     const int opa = opacity_opa(opacity);
     lv_obj_set_style_arc_opa(arc, opa, LV_PART_MAIN);
@@ -409,8 +414,10 @@ const lv_font_t *font_for_tier(int size) {
 }
 
 const lv_font_t *caption_font_for_tier(int size) {
-    return size == MOTO_UI_SIZE_S ? &lv_font_montserrat_16
-                                  : &lv_font_montserrat_20;
+    // Captions are UI copy ("剩余", "剩余时间", "北"), not numbers, so they need
+    // the Chinese-capable generated fonts. Using Montserrat here rendered the
+    // captions as tofu boxes on the device.
+    return size == MOTO_UI_SIZE_S ? &moto_font_nav_16 : &moto_font_nav_20;
 }
 
 void apply_component(lv_obj_t *object, const moto_ui_component_layout_t &c,
@@ -478,7 +485,8 @@ lv_color_t traffic_color(moto_traffic_t traffic) {
 }
 
 const char *cardinal_name(std::uint16_t heading) {
-    static const char *names[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+    static const char *names[] = {"北", "东北", "东", "东南",
+                                  "南", "西南", "西", "西北"};
     return names[((heading + 22U) / 45U) % 8U];
 }
 
@@ -1468,32 +1476,32 @@ void set_layer_opacity(void *object, int32_t opacity) {
 
 void apply_lifecycle_content(LifecycleVisual visual) {
     ui.lifecycle_visual = visual;
-    const char *kicker = "MOTO GPS / PHONE LINK";
+    const char *kicker = "MOTO GPS / 手机连接";
     const char *title = "";
     const char *subtitle = "";
     lv_color_t title_color = kWhite;
     switch(visual) {
         case LifecycleVisual::PhoneOffline:
-            title = "CONNECT PHONE";
+            title = "连接手机";
             subtitle = "请打开手机应用";
             break;
         case LifecycleVisual::PhoneConnecting:
-            title = "CONNECTING";
+            title = "正在连接";
             subtitle = "正在建立连接";
             break;
         case LifecycleVisual::Connected:
-            title = "CONNECTED";
+            title = "已连接";
             subtitle = "连接成功";
             title_color = kGreen;
             break;
         case LifecycleVisual::Ready:
-            kicker = "MOTO GPS / READY";
-            title = "READY TO RIDE";
+            kicker = "MOTO GPS / 就绪";
+            title = "准备出发";
             subtitle = "请在手机选择目的地";
             break;
         case LifecycleVisual::Planning:
-            kicker = "MOTO GPS / ROUTE";
-            title = "BUILDING ROUTE";
+            kicker = "MOTO GPS / 路线";
+            title = "规划路线";
             subtitle = "正在规划路线";
             break;
         case LifecycleVisual::Hidden:
@@ -1825,7 +1833,7 @@ void update_navigation(const moto_ui_state_t *state) {
                       static_cast<unsigned>(state->speed_kph));
         lv_label_set_text(ui.nav_speed, speed_text);
         lv_obj_align_to(ui.nav_speed_unit, ui.nav_speed,
-                        LV_ALIGN_OUT_RIGHT_BOTTOM, px(4), px(-6));
+                        LV_ALIGN_OUT_RIGHT_BOTTOM, 4, -6);
 
         char heading_text[12];
         std::snprintf(heading_text, sizeof(heading_text), "%03u°",
@@ -1975,7 +1983,7 @@ void update_compass(const moto_ui_state_t *state) {
     }
 
     static const double bearings[4] = {0.0, 90.0, 180.0, 270.0};
-    static const char *letters[4] = {"N", "E", "S", "W"};
+    static const char *letters[4] = {"北", "东", "南", "西"};
     for(int i = 0; i < 4; ++i) {
         const double angle = bearings[i] * kPi / 180.0 - heading_rad;
         const int x = static_cast<int>(px(180.0) + std::sin(angle) * px(112.0));
@@ -1987,11 +1995,11 @@ void update_compass(const moto_ui_state_t *state) {
 }
 
 void update_music_view() {
-    lv_label_set_text(ui.music_source, ui.music.connected ? ui.music_source_text : "PHONE NOT CONNECTED");
+    lv_label_set_text(ui.music_source, ui.music.connected ? ui.music_source_text : "手机未连接");
     lv_label_set_text(ui.music_title, ui.music_title_text);
     lv_label_set_text(ui.music_artist, ui.music_artist_text);
     lv_label_set_text(ui.music_button_labels[1], ui.music.playing ? "II" : ">");
-    lv_label_set_text(ui.music_button_labels[3], ui.music.liked ? "SENT" : "LIKE");
+    lv_label_set_text(ui.music_button_labels[3], ui.music.liked ? "已送" : "喜欢");
     if(ui.music.like_available) {
         lv_obj_remove_flag(ui.music_buttons[3], LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -2209,8 +2217,8 @@ void create_navigation_page() {
     lv_obj_add_flag(ui.nav_lifecycle, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     ui.nav_lifecycle_kicker = make_label(
-        ui.nav_lifecycle, &lv_font_montserrat_16, kQuiet,
-        "MOTO GPS / PHONE LINK");
+        ui.nav_lifecycle, &moto_font_nav_16, kQuiet,
+        "MOTO GPS / 手机连接");
     lv_obj_set_style_text_letter_space(ui.nav_lifecycle_kicker, px(2), 0);
     lv_obj_align(ui.nav_lifecycle_kicker, LV_ALIGN_TOP_MID, 0, px(39));
 
@@ -2223,7 +2231,7 @@ void create_navigation_page() {
                         LV_EVENT_DRAW_MAIN_END, nullptr);
 
     ui.nav_lifecycle_title = make_label(
-        ui.nav_lifecycle, &lv_font_montserrat_28, kWhite, "CONNECT PHONE");
+        ui.nav_lifecycle, &moto_font_nav_28, kWhite, "连接手机");
     lv_obj_set_width(ui.nav_lifecycle_title, px(310));
     lv_obj_set_style_text_align(ui.nav_lifecycle_title,
                                 LV_TEXT_ALIGN_CENTER, 0);
@@ -2303,7 +2311,7 @@ void create_compass_page() {
         lv_obj_set_style_line_color(ui.compass_ticks[i], kQuiet, 0);
     }
     for(int i = 0; i < 4; ++i) {
-        ui.compass_letters[i] = make_label(page, &lv_font_montserrat_16, kQuiet, "N");
+        ui.compass_letters[i] = make_label(page, &moto_font_nav_16, kQuiet, "北");
         lv_obj_set_size(ui.compass_letters[i], px(28), px(22));
         lv_obj_set_style_text_align(ui.compass_letters[i], LV_TEXT_ALIGN_CENTER, 0);
     }
@@ -2326,7 +2334,7 @@ void create_compass_page() {
 
 void create_music_page() {
     lv_obj_t *page = ui.pages[MOTO_UI_PAGE_MUSIC];
-    ui.music_source = make_label(page, &lv_font_montserrat_16, kQuiet, "APPLE MUSIC");
+    ui.music_source = make_label(page, &moto_font_nav_16, kQuiet, "手机音乐");
     lv_obj_set_style_text_letter_space(ui.music_source, px(2), 0);
     lv_obj_align(ui.music_source, LV_ALIGN_TOP_MID, 0, px(37));
 
@@ -2347,18 +2355,18 @@ void create_music_page() {
     lv_obj_set_style_bg_opa(core, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(core, 0, 0);
 
-    ui.music_title = make_label(page, &lv_font_montserrat_20, kWhite, "NIGHT RIDE");
+    ui.music_title = make_label(page, &moto_font_nav_20, kWhite, "未在播放");
     lv_obj_set_width(ui.music_title, px(260));
     lv_obj_set_style_text_align(ui.music_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.music_title, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.music_title, LV_ALIGN_TOP_MID, 0, px(190));
-    ui.music_artist = make_label(page, &lv_font_montserrat_16, kQuiet, "PHONE NOW PLAYING");
+    ui.music_artist = make_label(page, &moto_font_nav_16, kQuiet, "手机媒体");
     lv_obj_set_width(ui.music_artist, px(260));
     lv_obj_set_style_text_align(ui.music_artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.music_artist, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.music_artist, LV_ALIGN_TOP_MID, 0, px(216));
 
-    static const char *labels[4] = {"<<", ">", ">>", "LIKE"};
+    static const char *labels[4] = {"<<", ">", ">>", "喜欢"};
     static const int positions[4][3] = {
         {72, 254, 54}, {153, 247, 62}, {234, 254, 54}, {147, 312, 66},
     };
@@ -2397,7 +2405,7 @@ void create_music_page() {
             ui.music_buttons[i], music_button_event, LV_EVENT_CLICKED,
             reinterpret_cast<void *>(static_cast<std::intptr_t>(i)));
         ui.music_button_labels[i] = make_label(
-            ui.music_buttons[i], i == 3 ? &lv_font_montserrat_16 : &lv_font_montserrat_20,
+            ui.music_buttons[i], i == 3 ? &moto_font_nav_16 : &lv_font_montserrat_20,
             i == 1 ? kBlack : kWhite, labels[i]);
         lv_obj_center(ui.music_button_labels[i]);
     }
@@ -2741,21 +2749,21 @@ void apply_layout_internal(const moto_ui_layout_t *incoming) {
     }
     // Route / street styling (§1.e).
     if(ui.nav_route != nullptr) {
-        lv_obj_set_style_line_width(ui.nav_route, px(ui.layout.route_width_px), 0);
+        lv_obj_set_style_line_width(ui.nav_route, ui.layout.route_width_px, 0);
         lv_obj_set_style_line_color(
             ui.nav_route,
             rgb_color(ui.layout.route_r, ui.layout.route_g, ui.layout.route_b), 0);
     }
     if(ui.nav_route_shadow != nullptr) {
         lv_obj_set_style_line_width(ui.nav_route_shadow,
-                                    px(ui.layout.route_width_px + 7), 0);
+                                    ui.layout.route_width_px + 7, 0);
     }
     if(ui.nav_map_base != nullptr) {
         const bool roads = (ui.layout.layer_mask & 0x01) != 0;
         const bool buildings = (ui.layout.layer_mask & 0x02) != 0;
         for(std::uint8_t i = 0; i < MOTO_UI_ROAD_POLYLINE_CAPACITY; ++i) {
             if(ui.nav_roads[i] == nullptr) continue;
-            lv_obj_set_style_line_width(ui.nav_roads[i], px(ui.layout.street_width_px), 0);
+            lv_obj_set_style_line_width(ui.nav_roads[i], ui.layout.street_width_px, 0);
             lv_obj_set_style_line_color(
                 ui.nav_roads[i],
                 rgb_color(ui.layout.street_r, ui.layout.street_g, ui.layout.street_b), 0);
