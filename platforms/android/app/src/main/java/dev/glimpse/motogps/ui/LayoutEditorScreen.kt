@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.glimpse.motogps.layout.BasemapTheme
+import dev.glimpse.motogps.layout.BasemapThemes
 import dev.glimpse.motogps.layout.LayoutArcAnchor
 import dev.glimpse.motogps.layout.LayoutArcSpan
 import dev.glimpse.motogps.layout.LayoutColor
@@ -59,6 +60,8 @@ fun LayoutEditorScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var selectedComponent by remember { mutableStateOf<LayoutComponentId?>(null) }
     var showResetDialog by remember { mutableStateOf(false) }
+    // §7.2 工具栏：预览是否叠加演示底图（关掉后可空底图检查布局）。
+    var showDemoData by remember { mutableStateOf(true) }
 
     // 待推送变更自动触发推送（300ms 防抖由 NavViewModel 协程负责）。
     LaunchedEffect(state.layout.revision, state.syncState) {
@@ -93,6 +96,10 @@ fun LayoutEditorScreen(
         ) {
             ToolButton("撤销", enabled = editor.canUndo) { editor.undo() }
             ToolButton("重做", enabled = editor.canRedo) { editor.redo() }
+            ToolButton(
+                if (showDemoData) "隐藏演示" else "演示数据",
+                enabled = true,
+            ) { showDemoData = !showDemoData }
             Spacer(Modifier.weight(1f))
             ToolButton("恢复默认", enabled = true, destructive = true) { showResetDialog = true }
         }
@@ -101,6 +108,7 @@ fun LayoutEditorScreen(
         DevicePreview(
             layout = state.layout,
             selected = selectedComponent,
+            showDemoData = showDemoData,
             onComponentTap = { selectedComponent = it },
             onDragStart = { selectedComponent = it },
             onDragEnd = { id ->
@@ -295,9 +303,10 @@ private fun BasemapTab(editor: LayoutEditorState) {
     val state by editor.state.collectAsState()
     val basemap = state.layout.basemap
 
-    EditorSection(header = "主题预设", footer = "底图为矢量主题；本期不提供影像来源选项。") {
+    EditorSection(header = "主题预设", footer = "切换主题会改写下方路线/街道样式；底图为矢量主题，本期不提供影像来源选项。") {
         SegmentedRow("主题", BasemapTheme.entries.map { it.label }) { index ->
-            editor.updateBasemap { it.copy(theme = BasemapTheme.entries[index]) }
+            val theme = BasemapTheme.entries[index]
+            editor.updateBasemap { BasemapThemes.apply(it, theme) }
         }
     }
 

@@ -196,6 +196,26 @@ void load_credentials(WifiProvisioning::Impl& impl) {
   impl.has_credentials = !impl.credentials.ssid.empty();
 }
 
+// Applies the stored SSID/password to the WiFi driver.
+//
+// The STA configuration may only be written while the driver is stopped, so
+// callers must stop the station first. The hidden flag is expressed through
+// the scan mode, exactly like the manual scan path does.
+void apply_sta_config(const WifiProvisioning::Impl& impl) {
+  wifi_config_t wifi_config{};
+  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.ssid),
+               impl.credentials.ssid.c_str(), sizeof(wifi_config.sta.ssid) - 1);
+  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.password),
+               impl.credentials.password.c_str(),
+               sizeof(wifi_config.sta.password) - 1);
+  wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+  wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+  if (impl.credentials.hidden) {
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+  }
+  esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+}
+
 void persist_credentials(const WifiProvisioning::Impl& impl) {
   nvs_handle_t handle = 0;
   if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) {
@@ -362,8 +382,17 @@ esp_err_t WifiProvisioning::start(StatusCallback callback, void* context,
     impl_->ssid = impl_->credentials.ssid;
     ESP_LOGI(kTag, "restored credentials for %s",
              impl_->credentials.ssid.c_str());
+    // Mirror save_and_connect(): select the station mode first, then stop the
+    // driver so the STA configuration can be written, then start and associate.
+    // Applying the config while the mode is still WIFI_MODE_NULL is order-
+    // dependent behaviour that the interactive path never exercises.
     esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_stop();
+    apply_sta_config(*impl_);
     esp_wifi_start();
+    // Start the association right away: waiting for a scan to finish would
+    // leave the device idle for several seconds after every reboot.
+    esp_wifi_connect();
   } else {
     impl_->publish(State::NoCredentials, Error::None);
   }
@@ -383,15 +412,9 @@ esp_err_t WifiProvisioning::save_and_connect(const Credentials& credentials) {
   impl_->publish(State::Connecting, Error::None);
 
   esp_wifi_set_mode(WIFI_MODE_STA);
-  wifi_config_t wifi_config{};
-  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.ssid),
-               credentials.ssid.c_str(), sizeof(wifi_config.sta.ssid) - 1);
-  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.password),
-               credentials.password.c_str(),
-               sizeof(wifi_config.sta.password) - 1);
-  wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-  wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-  esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+  // The STA config is only accepted while the driver is stopped.
+  esp_wifi_stop();
+  apply_sta_config(*impl_);
   esp_wifi_start();
   esp_wifi_connect();
   return ESP_OK;
@@ -410,13 +433,9 @@ esp_err_t WifiProvisioning::connect_temporary(const Credentials& credentials) {
   impl_->publish(State::Connecting, Error::None);
 
   esp_wifi_set_mode(WIFI_MODE_STA);
-  wifi_config_t wifi_config{};
-  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.ssid),
-               credentials.ssid.c_str(), sizeof(wifi_config.sta.ssid) - 1);
-  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.password),
-               credentials.password.c_str(),
-               sizeof(wifi_config.sta.password) - 1);
-  esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+  // The STA config is only accepted while the driver is stopped.
+  esp_wifi_stop();
+  apply_sta_config(*impl_);
   esp_wifi_start();
   esp_wifi_connect();
   return ESP_OK;

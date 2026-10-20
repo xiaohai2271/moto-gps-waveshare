@@ -574,6 +574,65 @@ repeat:
 
 预计：3–5 人日。
 
+#### P1/P2/P3 构建与验收记录（2026-10-20）
+
+本轮把 P1–P3 的代码路径补齐并做了可复现的构建/测试验证（P4 见下节真机记录）。
+
+**构建与测试（本机复跑）**
+
+| 目标 | 命令 | 结果 |
+| --- | --- | --- |
+| 共享协议 + 固件 host 测试 | `cmake --build build/native && ctest --test-dir build/native` | 10/10 通过 |
+| Android 构建 + JVM 单测 | `gradlew assembleDebug testDebugUnitTest` | BUILD SUCCESSFUL，116 个单测全过，`app-debug.apk` 16.4 MB |
+| 固件（ESP32-S3，IDF 5.5.5） | `idf.py build` | Project build complete，`moto_gps_esp32.bin` 2.07 MB |
+
+**本轮修复的缺陷**
+
+1. **布局丢失更新（固件，§5.6）**：`apply_pending_layout()` 用
+   `layout_dirty_` 判断"写入期间是否又收到新布局"，但该标志在本轮开始时必然
+   仍为真，于是分支恒成立——写入期间到达的新布局会被直接丢弃，设备随后上报
+   旧 revision。改为按 `layout_revision` 比较，新布局保留到下一帧再应用与落盘。
+   用 host 测试注入该竞态锁定（`test_layout_pushed_during_the_flash_write_is_not_lost`）。
+2. **CRC 覆盖不全（固件，§6.5）**：`record_crc()` 只把前 64 字节写入校验，
+   而 CRC 字段在 112 字节处，组件 4 的后半段与组件 5–8 完全不受保护——正常
+   范围内的比特翻转/半截写入会被当成合法布局应用。改为按块链式覆盖
+   `offsetof(crc32)` 之前的全部字节。
+
+> 迁移说明：CRC 覆盖范围变化后，旧固件写入的 NVS 记录会被判为无效并回退到
+> 默认布局；手机下次连接时 revision 不一致会自动重推，属一次性、自愈行为。
+
+**本轮补齐的 P2 缺口**
+
+1. **缩放未联动 MapScene 窗口（§4.8）**：`NavigationSession` 之前固定
+   `SCENE_RADIUS_M = 500`，缩放到 50%（约 1 km）时设备投影出的范围没有对应数据。
+   现按 `radius_m = clamp(500 × 100 / zoom_percent, 100, 1500)` 计算
+   （`LayoutGeometry.sceneRadiusM`），且缩放变化会强制重建场景，不必等车移动
+   100 m。编辑器与导航会话改用共享的 `LayoutStore.shared()`，否则两边各持一份
+   构造期快照，缩放改动传不过去。
+2. **主题预设没有实际效果（§P2）**：固件不解释 `theme_id`，只认具体的
+   route/street/building 样式字段，而编辑器切换主题只改了 `theme` 标签。
+   现由 `BasemapThemes` 在手机侧把三套预设写进样式字段（深色=既有默认视觉），
+   切换即一次布局提交，设备在一帧内应用；图层开关不受主题影响。
+
+**测试补充（§9.2/§9.3）**
+
+- 新增 `tests/native/ui_layout_store_tests.cpp`：20 个用例覆盖记录往返、
+  magic/长度/CRC/半截写入拒绝、`valid_layout()` 全部边界、以及
+  "CRC 正确但内容非法"的回退。
+- 扩展 `tests/native/phone_nav_bridge_tests.cpp`：布局接收→去重→应用→落盘、
+  revision 单调、防抖合并、畸形载荷整条拒绝、写入期竞态。
+- 新增 Android 单测：`LayoutGeometryTest` 的缩放下限/单调/越界钳制，
+  `BasemapThemesTest` 的预设合法性、互不相同、图层保留、幂等。
+
+**仍需真机确认的项（无法在 CI/本机复现）**：导航中连续推送布局的 10 分钟
+watchdog/丢帧记录、真机透明度与弧长逐项目视核对、编辑器预览与真机截图的
+颜色校准（§4.10 待定项 1）。
+
+**本期未纳入的项（不在 §8 各阶段范围内）**：§7.7 的自检/调试卷扩展——
+`SelfCheckScreen` 目前不含布局推送/ACK 计数、WiFi 状态与权限汇总三行；
+Debug 构建的"强制推送默认布局""模拟旧固件（忽略 bit8）"开关也未做。
+需要时按 §7.7 单独排期，不影响 P1–P4 的验收。
+
 ### P3 权限中心
 
 范围：权限列表、状态检测、运行时申请、系统设置跳转、返回刷新；媒体通知使用权深链。
@@ -586,6 +645,17 @@ repeat:
 
 预计：2–3 人日。
 
+#### P3 状态
+
+权限中心已实现：四项状态检测（`PermissionCenter`/`PermissionLogic`，21 个 JVM
+单测覆盖状态映射与 Intent 目标）、运行时申请走 `RequestMultiplePermissions`、
+特殊权限按项跳系统设置（`ACTION_NOTIFICATION_LISTENER_SETTINGS` /
+`ACTION_APP_NOTIFICATION_SETTINGS` / `ACTION_BLUETOOTH_SETTINGS` /
+`ACTION_LOCATION_SOURCE_SETTINGS`）、页面进入即检查且 `onResume` 再刷新、顶部
+"x/y 已就绪"汇总、不提供"全部申请"按钮。清单已含 `NEARBY_WIFI_DEVICES`
+（`neverForLocation`, `targetApi 31`）、`CHANGE_WIFI_STATE`、
+`ACCESS_WIFI_STATE`、`BLUETOOTH_SCAN`（`neverForLocation`）。
+
 ### P4 WiFi 配网
 
 范围：固件 WiFi STA/扫描/NVS/状态；BLE 配网消息；Android 配网页、LocalOnlyHotspot、手动模式、扫描列表；`/health` 联调端点。
@@ -596,6 +666,36 @@ repeat:
 - 设备重启后自动重连；
 - 错误原因（密码错/找不到 SSID/超时）正确展示；
 - BLE 导航与 WiFi 同时工作 10 分钟无断连。
+
+#### P4 真机验收记录（2026-10-20）
+
+固件 `be3f2a3`/`3b61871`，Android `3f5ec06`/`e19fc90`，设备
+Waveshare ESP32-S3-Touch-AMOLED-1.75C（COM3），手机小米 10（`80d4619b`）。
+
+- **BLE 能力协商**：握手得到 `capabilities=0x3ff`，bit9（WiFi 配网）已上报。
+  - 修复：手机 `PHONE_CAPABILITIES` 之前没有包含 `WIFI_PROVISIONING`，交集后
+    bit9 被丢弃，界面误报"固件需升级"。
+- **扫描列表**：`WifiScanRequest` → 设备扫描 → `WifiScanResult` 回传 9 个 AP，
+  界面按 SSID / 加密方式（WPA2/WPA3）/ RSSI 分色显示。
+- **状态回传**：设备 `wifi status: state=4`（未配置网络）→ 界面显示
+  "未配置网络"；下发凭据后 `state=1`（连接中）→ 界面显示"正在连接…"。
+- **错误展示**：故意使用错误密码，设备上报 `state=3 error=3`（失败/超时），
+  随后按 `auto_reconnect` 重新进入 `state=1` 重试。
+- **重启自动重连**：设备重启后串口打印
+  `wifi_prov: restored credentials for CMCC` + `wifi:mode : sta`，
+  自动用 NVS 中的凭据重新连接。
+- **自动热点兜底**：本机 Android 不向 App 暴露 LocalOnlyHotspot 的 SSID/密码，
+  界面按预期提示"系统未向 App 暴露热点 SSID/密码，请使用手动模式"并给出
+  "改用手动模式"按钮（§7.6 的机型差异兜底）。
+- **BLE + WiFi + 屏幕共存**：同时启用后设备稳定运行（面板 25 fps、无
+  `spi_master: DMA TX underflow`、无看门狗复位），BLE 心跳与
+  `WifiStatus` 上报并行正常。
+  - 关键调参：NimBLE 主机内存放 PSRAM、WiFi/LWIP 缓冲留在内部 RAM、
+    面板 SPI 由 40 MHz 降到 20 MHz、绘图缓冲 320 行降到 128 行、
+    FreeRTOS 任务栈缩减（WiFi 与蓝牙控制器共用内部 SRAM 池）。
+
+尚待人工环境配合的项：`/health` 端点可达性需要设备真正连上同一 WiFi 后再验证
+（本次仅用错误密码验证了失败路径与重连逻辑）。
 
 预计：4–6 人日。
 
@@ -655,7 +755,7 @@ repeat:
 2. **加速度显示格式**：当前设计为 `+1.2 m/s²`；若你更想要 `+4 km/h/s` 或只保留颜色趋势，评审时改。
 3. **编辑器是否提供“导航中只读预览”**：当前设计允许实时编辑；若担心骑行误触，可加二次确认。
 4. **布局多套预设/分享**：本期不做；后续版本再加 `preset_id` 与导入导出。
-5. **底图主题的具体色板**：P2 出三套预设后确认。
+5. **底图主题的具体色板**：已出三套（见 `BasemapThemes`：深色=既有默认、浅色=系统蓝路线、高对比=高亮加粗路线）；真机截图后可再微调数值，但字段与协议不变。
 6. **WiFi 数据面用途**：栅格瓦片、OTA、在线路况三选一或组合，P4 后单独排期。
 7. **iOS 跟进时间**：共享协议与布局模型已按跨端设计，iOS 侧主要是 SwiftUI 编辑器与权限页。
 
@@ -664,3 +764,4 @@ repeat:
 | 日期 | 版本 | 变更 |
 | --- | --- | --- |
 | 2026-10-19 | v0.1 | 首版：需求澄清 + 布局模型 + 协议草案 + 分阶段计划 |
+| 2026-10-20 | v0.2 | P4 真机验收记录；P1–P3 构建/测试验证记录，修复布局丢失更新与 CRC 覆盖不全，补齐缩放→MapScene 联动与主题预设 |

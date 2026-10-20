@@ -71,6 +71,9 @@ class NavigationSession(
     private val engine = NavEngine()
     private val location = GpsLocationSource(context)
     private val tileStore = dev.glimpse.motogps.map.MapTileStore(context, gateway)
+    // Shared with the editor so a zoom/basemap change is visible here without a
+    // second, stale copy of the layout (see LayoutStore.shared).
+    private val layoutStore = dev.glimpse.motogps.layout.LayoutStore.shared(context)
     private val media = dev.glimpse.motogps.media.MediaControllerSource(context)
     private val compass = dev.glimpse.motogps.location.CompassSource(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -106,6 +109,9 @@ class NavigationSession(
     private var lastSceneAtMs = 0L
     private var lastSceneLon = 0.0
     private var lastSceneLat = 0.0
+    // Radius of the scene last accepted by the device, so a zoom change (which
+    // alters the radius without moving the rider) still refreshes the map.
+    private var lastSceneRadiusM = 0
     private var lastSnapshotDiagAt = 0L
     private var lastMediaKey: String? = null
     private var compassHeading: Double? = null
@@ -677,7 +683,13 @@ class NavigationSession(
         navigating = false
         ticker?.cancel()
         ticker = null
-        engine.cancel()
+        // cancel() resets the core session (state -> Idle, no destination, no
+        // route view). Keep its snapshot: it is the terminal frame the round
+        // display needs.
+        val ended = runCatching { engine.cancel() }.getOrNull()?.snapshot
+        // The next navigation must resend its geometry even if the gateway
+        // reuses the route token/generation.
+        lastGeometryKey = null
         chosenPreviewRoute = null
         suppliedPreviewRoute = false
         // iOS stopNavigation(): return to the destination search state.
@@ -696,6 +708,13 @@ class NavigationSession(
             previewOrigin = null,
         )
         log("导航已结束")
+        // publish() drops every update while !navigating, so the terminal frame
+        // has to be sent explicitly. Without it the device keeps the last route,
+        // maneuver and distances on screen until the BLE link drops.
+        if (ended != null) {
+            runCatching { sendSnapshot(ended, priority = true) }
+                .onFailure { log("导航结束帧发送失败：${it.message}") }
+        }
     }
 
     fun close() {
@@ -853,18 +872,30 @@ class NavigationSession(
      * Sends a bounded MapScene from cached tiles when the rider has moved
      * >100 m. Origin conversion WGS84 -> GCJ-02 happens exactly once, here,
      * because tile geometry is already GCJ-02.
+     *
+     * The window radius follows the layout zoom (§4.8), so the phone buffers
+     * exactly the area the round display projects at that zoom; a zoom change
+     * forces a rebuild even when the rider has not moved.
      */
     private fun maybeSendMapScene() {
         if (!_state.value.bleReady || _state.value.route == null) return
         val fix = lastFix ?: return
         val now = SystemClock.elapsedRealtime()
+        val radiusM = dev.glimpse.motogps.layout.LayoutGeometry.sceneRadiusM(
+            layoutStore.current().map.zoomPercent,
+        )
+        val zoomChanged = radiusM != lastSceneRadiusM
         val moved = haversineM(lastSceneLon, lastSceneLat, fix.longitude, fix.latitude)
-        if (lastSceneAtMs != 0L && moved < SCENE_MIN_MOVE_M && now - lastSceneAtMs < 30_000) return
+        if (!zoomChanged && lastSceneAtMs != 0L && moved < SCENE_MIN_MOVE_M &&
+            now - lastSceneAtMs < 30_000
+        ) {
+            return
+        }
 
         val gcj = NativeBridge.wgs84ToGcj02(fix.longitude, fix.latitude)
         if (gcj[2] == 0.0) return
         val tiles = runCatching {
-            dev.glimpse.motogps.map.MapTilePlanner.aroundGcj02(gcj[1], gcj[0], SCENE_RADIUS_M.toDouble())
+            dev.glimpse.motogps.map.MapTilePlanner.aroundGcj02(gcj[1], gcj[0], radiusM.toDouble())
         }.getOrElse { return }
         val cached = tiles.map { tileStore.tileFile(it) }.filter { it.exists() }
         if (cached.isEmpty()) {
@@ -873,15 +904,16 @@ class NavigationSession(
         }
         mapSceneRevision += 1
         val scene = dev.glimpse.motogps.map.MapSceneBuilder.build(
-            mapSceneRevision, gcj[0], gcj[1], SCENE_RADIUS_M, cached,
+            mapSceneRevision, gcj[0], gcj[1], radiusM, cached,
         ) ?: return
         if (central.sendMapScene(scene.revision, scene.encoded)) {
             lastSceneAtMs = now
             lastSceneLon = fix.longitude
             lastSceneLat = fix.latitude
+            lastSceneRadiusM = radiusM
             log(
                 "已发送地图场景 rev=${scene.revision}（${scene.roads.size} 路 / " +
-                    "${scene.buildings.size} 建筑，${cached.size} 瓦片）",
+                    "${scene.buildings.size} 建筑，${cached.size} 瓦片，半径 ${radiusM} m）",
             )
         }
     }
@@ -1003,7 +1035,8 @@ class NavigationSession(
         const val TAG = "MotoGpsNav"
         const val SNAPSHOT_INTERVAL_MS = 200L
         const val MAX_POINTS_PER_CHUNK = 24
-        const val SCENE_RADIUS_M = 500
+        // The MapScene window radius now derives from the layout zoom (§4.8);
+        // LayoutGeometry.BASE_SCENE_RADIUS_M is the 100% baseline.
         const val SCENE_MIN_MOVE_M = 100.0
         const val COMMAND_PAGE_SELECTED = 0
         const val COMMAND_SWIPE_LEFT = 3

@@ -427,6 +427,12 @@ bool PhoneNavBridge::start_renderer() {
 void PhoneNavBridge::render_pending_for_test() {
   render_pending();
 }
+
+void PhoneNavBridge::set_before_layout_persist_hook(
+    void (*hook)(void)) noexcept {
+  const std::lock_guard<std::mutex> lock(state_mutex_);
+  before_layout_persist_hook_ = hook;
+}
 #endif
 
 void PhoneNavBridge::on_link_state(bool active) {
@@ -677,6 +683,11 @@ void PhoneNavBridge::apply_pending_layout() {
   }
 
   const moto_ui_layout_t layout = to_renderer_layout(pending);
+#ifndef ESP_PLATFORM
+  if (before_layout_persist_hook_ != nullptr) {
+    before_layout_persist_hook_();
+  }
+#endif
   // Persisting is the one blocking operation in this path; it stays outside
   // state_mutex_ so BLE decoding is never delayed by a flash write.
   const bool persisted =
@@ -692,16 +703,30 @@ void PhoneNavBridge::apply_pending_layout() {
   bool send_state = false;
   {
     const std::lock_guard<std::mutex> lock(state_mutex_);
-    if (layout_dirty_) {
-      // A newer push arrived while the flash write was running; leave the
-      // pending state alone and let the next frame settle it.
+    // The renderer now shows exactly the layout that was just applied, whether
+    // or not the phone pushed a newer one in the meantime.
+    render_layout_ = layout;
+    // A newer push may have landed while the flash write was running. Its
+    // revision is strictly greater than the one we just applied, because
+    // consume_ui_layout() answers duplicates and rollbacks without touching the
+    // pending slot. Comparing revisions is what tells the two cases apart:
+    // layout_dirty_ is still set from the push that started this pass, so
+    // testing it here would always look like a race and would silently drop the
+    // newer layout (device-verified lost update on a fast drag burst).
+    if (pending_layout_.layout_revision == pending.layout_revision) {
       layout_dirty_ = false;
       layout_dirty_since_ms_ = 0;
       pending_layout_ = {};
-      render_layout_ = layout;
       applied_layout_revision_ = pending.layout_revision;
       layout_nvs_saved_ = persisted;
       send_state = true;
+    } else {
+      // Leave the newer layout pending (and dirty) so the next frame applies
+      // and persists it too; its debounce window is measured from the first
+      // push of the burst, so the coalescing rule of §5.6 still holds.
+      ESP_LOGI(kTag, "layout revision %u superseded by %u while saving",
+               static_cast<unsigned>(pending.layout_revision),
+               static_cast<unsigned>(pending_layout_.layout_revision));
     }
   }
   if (send_state) {

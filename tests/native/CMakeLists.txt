@@ -106,6 +106,16 @@ target_include_directories(motion_heading_fusion_tests PRIVATE
 )
 target_compile_features(motion_heading_fusion_tests PRIVATE cxx_std_17)
 
+# ui_layout_store is header-only on host builds: the ESP_PLATFORM NVS branch is
+# replaced by an in-memory record, so the test compiles the header directly and
+# needs no extra source file.
+add_executable(ui_layout_store_tests ui_layout_store_tests.cpp)
+target_include_directories(ui_layout_store_tests PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}/../../platforms/esp32/main"
+  "${CMAKE_CURRENT_LIST_DIR}/../../shared/nav_ui/include"
+)
+target_compile_features(ui_layout_store_tests PRIVATE cxx_std_17)
+
 find_package(Threads REQUIRED)
 add_executable(phone_nav_bridge_tests
   phone_nav_bridge_tests.cpp
@@ -137,4 +147,5 @@ add_test(NAME nav_presenter_tests COMMAND nav_presenter_tests)
 add_test(NAME ble_protocol_tests COMMAND ble_protocol_tests)
 add_test(NAME connection_epoch_gate_tests COMMAND connection_epoch_gate_tests)
 add_test(NAME motion_heading_fusion_tests COMMAND motion_heading_fusion_tests)
+add_test(NAME ui_layout_store_tests COMMAND ui_layout_store_tests)
 add_test(NAME phone_nav_bridge_tests COMMAND phone_nav_bridge_tests)

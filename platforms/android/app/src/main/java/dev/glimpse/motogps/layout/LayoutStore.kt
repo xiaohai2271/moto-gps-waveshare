@@ -62,7 +62,24 @@ class LayoutStore(context: Context) {
         return next
     }
 
-    private companion object {
-        const val KEY_LAYOUT = "ui_layout_v1"
+    companion object {
+        private const val KEY_LAYOUT = "ui_layout_v1"
+
+        @Volatile
+        private var sharedInstance: LayoutStore? = null
+
+        /**
+         * 进程内共享实例。编辑器（NavViewModel）与导航会话（NavigationSession）
+         * 必须看到同一份布局：各自 new 一个实例时，构造时加载的 StateFlow 快照
+         * 不会随对方的写入更新，缩放下发的 MapScene 窗口就会停留在旧值（§4.8）。
+         */
+        @JvmStatic
+        fun shared(context: Context): LayoutStore {
+            sharedInstance?.let { return it }
+            return synchronized(this) {
+                sharedInstance ?: LayoutStore(context.applicationContext)
+                    .also { sharedInstance = it }
+            }
+        }
     }
 }

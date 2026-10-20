@@ -174,6 +174,59 @@ data class BasemapConfig(
     val layers: LayerToggles = LayerToggles(),
 )
 
+/** 一套主题预设里会随主题变化的字段（图层开关不属于主题，切换时保留）。 */
+data class BasemapStyle(
+    val route: RouteStyle,
+    val street: StreetStyle,
+    val buildingOpacity: Int,
+)
+
+/**
+ * §P2 的三套矢量底图预设。协议里的 `theme_id` 是标签，真正决定画面的是
+ * route/street/building 的具体样式字段（§4.9 的 JSON 同样同时携带两者），
+ * 因此切换主题 = 把这些字段改写成预设值，固件无需理解 theme_id 即可在
+ * 一帧内完成切换。
+ */
+object BasemapThemes {
+    /** 深色：与既有默认视觉一致（白色路线 / 中性灰街道）。 */
+    val DARK = BasemapStyle(
+        route = RouteStyle(LayoutColor(0xFFFFFF), widthPx = 6, opacity = 100),
+        street = StreetStyle(LayoutColor(0x8E8E93), widthPx = 3, opacity = 35),
+        buildingOpacity = 25,
+    )
+
+    /** 浅色：路线用系统蓝，街道加强对比以适配浅底。 */
+    val LIGHT = BasemapStyle(
+        route = RouteStyle(LayoutColor(0x0A84FF), widthPx = 6, opacity = 100),
+        street = StreetStyle(LayoutColor(0x3C3C43), widthPx = 3, opacity = 55),
+        buildingOpacity = 18,
+    )
+
+    /** 高对比：加粗的高亮路线 + 更实的街道，弱化建筑避免干扰。 */
+    val HIGH_CONTRAST = BasemapStyle(
+        route = RouteStyle(LayoutColor(0xFFD60A), widthPx = 9, opacity = 100),
+        street = StreetStyle(LayoutColor(0xFFFFFF), widthPx = 4, opacity = 70),
+        buildingOpacity = 10,
+    )
+
+    fun styleFor(theme: BasemapTheme): BasemapStyle = when (theme) {
+        BasemapTheme.DARK -> DARK
+        BasemapTheme.LIGHT -> LIGHT
+        BasemapTheme.HIGH_CONTRAST -> HIGH_CONTRAST
+    }
+
+    /** 切换主题：改写样式字段，保留图层开关（§7.2 底图页签）。 */
+    fun apply(config: BasemapConfig, theme: BasemapTheme): BasemapConfig {
+        val style = styleFor(theme)
+        return config.copy(
+            theme = theme,
+            route = style.route,
+            street = style.street,
+            buildingOpacity = style.buildingOpacity,
+        )
+    }
+}
+
 /** 布局根模型。revision 是手机侧单调递增版本号，仅用于同步/去重。 */
 data class UiLayout(
     val schema: Int = 1,

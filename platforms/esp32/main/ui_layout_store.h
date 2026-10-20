@@ -18,14 +18,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 
 #include "moto_nav_ui.h"
 
 namespace moto_ui_layout_store {
 
-// Scratch capacity for the CRC prefix. The header is a handful of bytes, so a
-// generous fixed bound keeps record_crc() free of variable-length arrays.
-inline constexpr std::size_t kStoredHeaderBytes = 64;
+// Size of one hashing run in record_crc(). MSVC rejects variable-length arrays,
+// and a single fixed buffer would have to grow with the record, so the prefix is
+// hashed chunks of this size and the runs are chained (see crc32_le()).
+inline constexpr std::size_t kCrcChunkBytes = 64;
 
 // NVS namespace and keys (§6.5).
 inline constexpr char kNamespace[] = "ui_cfg";
@@ -73,12 +75,20 @@ inline std::size_t stored_crc_offset() {
 }
 
 inline std::uint32_t record_crc(const StoredLayout& record) {
-  // A fixed-capacity scratch buffer keeps this valid C++ on MSVC too, which
-  // rejects the variable-length array spelling.
-  std::uint8_t bytes[kStoredHeaderBytes]{};
-  const std::size_t length = std::min(sizeof(bytes), stored_crc_offset());
-  std::memcpy(bytes, &record, length);
-  return crc32_le(0, bytes, length);
+  // Every byte before crc32 must be covered, or a torn write / bit flip in the
+  // tail of the record (component slots 4..8) would pass check_record() and be
+  // applied. Hash the prefix in fixed-size runs so no variable-length array is
+  // needed; crc32_le() chains like zlib, so resuming from the previous result
+  // is equivalent to hashing the whole prefix in one call.
+  const auto* bytes = reinterpret_cast<const std::uint8_t*>(&record);
+  const std::size_t total = stored_crc_offset();
+  static_assert(kCrcChunkBytes > 0, "the hashing run must not be empty");
+  std::uint32_t crc = 0;
+  for (std::size_t offset = 0; offset < total; offset += kCrcChunkBytes) {
+    const std::size_t chunk = std::min(kCrcChunkBytes, total - offset);
+    crc = crc32_le(crc, bytes + offset, chunk);
+  }
+  return crc;
 }
 
 // Structural integrity only: magic, payload size and CRC. Semantic validation

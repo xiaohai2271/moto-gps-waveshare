@@ -150,4 +150,37 @@ class LayoutGeometryTest {
         assertEquals(ComponentSizes.ARC_DIAMETER, a)
         assertEquals(ComponentSizes.ARC_DIAMETER, b)
     }
+
+    // --- 缩放 → MapScene 窗口半径（§4.8） ----------------------------------
+
+    @Test
+    fun zoom100KeepsTheExisting500MetreWindow() {
+        // 100% 必须与改造前的固定窗口一致，否则现有离线路网会突然变稀。
+        assertEquals(500, LayoutGeometry.sceneRadiusM(100))
+    }
+
+    @Test
+    fun zoomHalfDoublesTheWindowAndZoom200HalvesIt() {
+        assertEquals(1000, LayoutGeometry.sceneRadiusM(50))
+        assertEquals(250, LayoutGeometry.sceneRadiusM(200))
+    }
+
+    @Test
+    fun zoomRadiusIsMonotonicAndClampedToProtocolRange() {
+        var previous = LayoutGeometry.sceneRadiusM(50)
+        for (zoom in 50..200) {
+            val radius = LayoutGeometry.sceneRadiusM(zoom)
+            assertTrue("radius must shrink as zoom grows (zoom=$zoom)", radius <= previous)
+            assertTrue("radius below the minimum (zoom=$zoom)", radius >= LayoutGeometry.MIN_SCENE_RADIUS_M)
+            assertTrue("radius above the maximum (zoom=$zoom)", radius <= LayoutGeometry.MAX_SCENE_RADIUS_M)
+            previous = radius
+        }
+    }
+
+    @Test
+    fun outOfRangeZoomIsClampedNotExtrapolated() {
+        // 协议是 50..200；越界值按边界处理，避免窗口被放大到不可用的范围。
+        assertEquals(LayoutGeometry.sceneRadiusM(50), LayoutGeometry.sceneRadiusM(0))
+        assertEquals(LayoutGeometry.sceneRadiusM(200), LayoutGeometry.sceneRadiusM(1000))
+    }
 }
