@@ -628,6 +628,11 @@ repeat:
 watchdog/丢帧记录、真机透明度与弧长逐项目视核对、编辑器预览与真机截图的
 颜色校准（§4.10 待定项 1）。
 
+**本期未纳入的项（不在 §8 各阶段范围内）**：§7.7 的自检/调试卷扩展——
+`SelfCheckScreen` 目前不含布局推送/ACK 计数、WiFi 状态与权限汇总三行；
+Debug 构建的"强制推送默认布局""模拟旧固件（忽略 bit8）"开关也未做。
+需要时按 §7.7 单独排期，不影响 P1–P4 的验收。
+
 ### P3 权限中心
 
 范围：权限列表、状态检测、运行时申请、系统设置跳转、返回刷新；媒体通知使用权深链。
@@ -639,6 +644,17 @@ watchdog/丢帧记录、真机透明度与弧长逐项目视核对、编辑器�
 - 系统设置返回后状态自动刷新。
 
 预计：2–3 人日。
+
+#### P3 状态
+
+权限中心已实现：四项状态检测（`PermissionCenter`/`PermissionLogic`，21 个 JVM
+单测覆盖状态映射与 Intent 目标）、运行时申请走 `RequestMultiplePermissions`、
+特殊权限按项跳系统设置（`ACTION_NOTIFICATION_LISTENER_SETTINGS` /
+`ACTION_APP_NOTIFICATION_SETTINGS` / `ACTION_BLUETOOTH_SETTINGS` /
+`ACTION_LOCATION_SOURCE_SETTINGS`）、页面进入即检查且 `onResume` 再刷新、顶部
+"x/y 已就绪"汇总、不提供"全部申请"按钮。清单已含 `NEARBY_WIFI_DEVICES`
+（`neverForLocation`, `targetApi 31`）、`CHANGE_WIFI_STATE`、
+`ACCESS_WIFI_STATE`、`BLUETOOTH_SCAN`（`neverForLocation`）。
 
 ### P4 WiFi 配网
 
