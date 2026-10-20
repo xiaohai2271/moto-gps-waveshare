@@ -1787,6 +1787,13 @@ void update_accel_readout(unsigned speed_kph) {
     // A negative zero must never print as "+-0.0": that would change the label
     // width and shift the readout by a pixel between otherwise equal frames.
     const float shown = accel_mps2 == 0.0F ? 0.0F : accel_mps2;
+    if(std::abs(shown) < 0.05F) {
+        // A constant-speed frame has no acceleration to report; leaving "+0.0"
+        // on screen made the readout look like an unexplained value.
+        lv_obj_add_flag(ui.nav_accel, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(ui.nav_accel, LV_OBJ_FLAG_HIDDEN);
     char text[12];
     if(shown > 0.0F) {
         std::snprintf(text, sizeof(text), "+%.1f", shown);
@@ -2186,7 +2193,7 @@ void create_navigation_page() {
     // The maneuver distance is part of the maneuver component (§C), so it is a
     // child of that container and positioned relatively to the icon.
     ui.nav_distance = make_label(ui.nav_maneuver, &lv_font_montserrat_48,
-                                 kWhite, "300");
+                                 kWhite, "");
     ui.nav_unit = make_label(ui.nav_maneuver, &lv_font_montserrat_20, kQuiet,
                              "m");
 
@@ -2220,14 +2227,14 @@ void create_navigation_page() {
     lv_obj_add_flag(ui.nav_heading_cardinal, LV_OBJ_FLAG_HIDDEN);
 
     ui.nav_remaining_distance =
-        make_label(page, &lv_font_montserrat_48, kWhite, "0.0");
+        make_label(page, &lv_font_montserrat_48, kWhite, "");
     ui.nav_remaining_distance_caption =
         make_label(page, &moto_font_nav_16, kQuiet, "剩余");
     lv_obj_add_flag(ui.nav_remaining_distance, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.nav_remaining_distance_caption, LV_OBJ_FLAG_HIDDEN);
 
     ui.nav_remaining_time =
-        make_label(page, &lv_font_montserrat_48, kWhite, "0");
+        make_label(page, &lv_font_montserrat_48, kWhite, "");
     ui.nav_remaining_time_caption =
         make_label(page, &moto_font_nav_16, kQuiet, "剩余时间");
     lv_obj_add_flag(ui.nav_remaining_time, LV_OBJ_FLAG_HIDDEN);
