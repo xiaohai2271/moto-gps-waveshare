@@ -41,7 +41,9 @@ class NavViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- 圆屏布局编辑（§7.4） ----------------------------------------------
 
-    private val layoutStore = LayoutStore(application)
+    // Shared with NavigationSession so the zoom chosen here reaches the
+    // MapScene window radius (§4.8).
+    private val layoutStore = LayoutStore.shared(application)
     val layoutEditor = LayoutEditorState(layoutStore)
 
     /** 是否支持布局编辑（连接后能力位 bit8；未连接按本地可编辑处理）。 */

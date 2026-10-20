@@ -3,6 +3,7 @@ package dev.glimpse.motogps.layout
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
@@ -168,4 +169,23 @@ object LayoutGeometry {
 
     /** 数值范围钳制。 */
     fun clamp(v: Int, min: Int, max: Int): Int = min(max(v, min), max)
+
+    /** 100% 缩放对应的 MapScene 窗口半径（米）。 */
+    const val BASE_SCENE_RADIUS_M = 500
+    const val MIN_SCENE_RADIUS_M = 100
+    const val MAX_SCENE_RADIUS_M = 1500
+
+    /**
+     * 布局缩放 → MapScene 窗口半径（§4.8）：
+     * `radius_m = clamp(500 × 100 / zoom_percent, 100, 1500)`。
+     *
+     * 100% 保持既有 500 m；50% 约 1 km；200% 约 250 m。设备侧按同一个
+     * zoom_percent 缩放投影（`0.44 px/m × zoom`），两侧以 100% 为共同基线，
+     * 因此 50%/200% 时路线与道路仍然对齐。
+     */
+    fun sceneRadiusM(zoomPercent: Int): Int {
+        val zoom = clamp(zoomPercent, 50, 200)
+        val radius = (BASE_SCENE_RADIUS_M * 100.0 / zoom).roundToInt()
+        return clamp(radius, MIN_SCENE_RADIUS_M, MAX_SCENE_RADIUS_M)
+    }
 }
