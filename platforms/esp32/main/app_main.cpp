@@ -184,6 +184,9 @@ extern "C" void app_main(void) {
   // Load the persisted navigation layout (or the default) before the renderer
   // task starts: the first rendered frame already shows the rider's arrangement.
   phone_bridge.restore_layout();
+  // WiFi provisioning initializes NVS itself (its own idempotent prepare) and
+  // restores the persisted hotspot credentials so a reboot reconnects.
+  phone_bridge.start_wifi();
   board_port_unlock();
 
   if (!phone_bridge.start_renderer()) {

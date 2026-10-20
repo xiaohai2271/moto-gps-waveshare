@@ -9,6 +9,7 @@
 #include "moto_nav_presenter.hpp"
 #include "motion_heading_fusion.hpp"
 #include "ui_layout_store.h"
+#include "wifi_provisioning.h"
 
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
@@ -44,6 +45,12 @@ class PhoneNavBridge {
   // Layout bookkeeping, evaluated on the 40 Hz presentation path so a pushed
   // layout is applied, persisted and acknowledged off the BLE worker.
   void apply_pending_layout();
+  // Starts the WiFi provisioning module and reports the initial state to the
+  // phone on the next Ready handshake. Safe to call once at boot.
+  void start_wifi();
+  // Sends the current WiFi status snapshot to the phone (no-op when the
+  // sender is not wired or the link is down).
+  void send_wifi_status();
 
  private:
   struct GeometryAssembly {
@@ -93,6 +100,18 @@ class PhoneNavBridge {
   moto::ble::AckStatus consume_ui_layout(
       const moto::ble::UiLayout& input);
   void send_ui_layout_state();
+  // WiFi provisioning entry points (docs §5.5). consume_* run on the BLE
+  // worker; the status callback arrives on the wifi_prov task and posts the
+  // WifiStatus through the sender without touching state_mutex_.
+  moto::ble::AckStatus consume_wifi_config(
+      const moto::ble::WifiConfig& input);
+  moto::ble::AckStatus consume_wifi_scan_request(
+      const moto::ble::WifiScanRequest& input);
+  static void wifi_status_changed(
+      const moto::wifi::Status& status, void* context);
+  static void wifi_scan_done(void* context);
+  void send_wifi_message(const moto::ble::Message& message);
+  void send_wifi_scan_results(std::uint16_t request_id);
   // Built-in default layout (docs §4.10). Mirrors Android LayoutDefaults.
   static moto_ui_layout_t default_layout();
   static void store_layout_to_renderer(const moto_ui_layout_t& layout);
@@ -156,5 +175,9 @@ class PhoneNavBridge {
   // Revision of the layout currently in effect. The phone's revision is
   // monotonic, so an older one is not rolled back (plan §6.5).
   std::uint16_t applied_layout_revision_ = 0;
+  // Last accepted WiFi scan request id, echoed in WifiScanResult.
+  std::uint16_t wifi_scan_request_id_ = 0;
+  bool wifi_started_ = false;
+  moto::wifi::WifiProvisioning wifi_;
   moto_ui_layout_t render_layout_{};
 };

@@ -24,6 +24,8 @@ idf_component_register(
         "motion_heading_sensor.cpp"
         "phone_nav_bridge.cpp"
         "ui_layout_store.cpp"
+        "wifi_health_server.cpp"
+        "wifi_provisioning.cpp"
         "${MOTO_SHARED_BLE_PROTOCOL_SOURCE}"
         "${MOTO_SHARED_NAV_PRESENTER_SOURCE}"
         "${MOTO_SHARED_UI_FONT}"
@@ -47,6 +49,10 @@ idf_component_register(
         esp_lcd_co5300
         nvs_flash
         bt
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_http_server
         esp32_s3_touch_amoled_1_75c
 )
 

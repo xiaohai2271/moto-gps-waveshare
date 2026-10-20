@@ -620,7 +620,8 @@ void BleNavTransport::send_connection_status(
                         moto::ble::CapabilityMusicCommands |
                         moto::ble::CapabilityCommandAck |
                         moto::ble::CapabilityMapScene |
-                        moto::ble::CapabilityUiLayout;
+                        moto::ble::CapabilityUiLayout |
+                        moto::ble::CapabilityWifiProvisioning;
   status.session_id = session_id;
   status.max_frame_size =
       static_cast<std::uint16_t>(negotiated_frame_size());

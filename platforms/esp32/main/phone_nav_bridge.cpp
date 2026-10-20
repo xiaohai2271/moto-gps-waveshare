@@ -12,6 +12,7 @@
 #include "esp_timer.h"
 #include "moto_nav_ui.h"
 #include "ui_layout_store.h"
+#include "wifi_health_server.h"
 
 namespace {
 constexpr char kTag[] = "phone_nav";
@@ -760,6 +761,144 @@ void PhoneNavBridge::send_ui_layout_state() {
   sender(message, moto::ble::Urgent, sender_context);
 }
 
+void PhoneNavBridge::start_wifi() {
+  if (wifi_started_) {
+    return;
+  }
+  if (wifi_.start(wifi_status_changed, this, wifi_scan_done) != ESP_OK) {
+    ESP_LOGE(kTag, "wifi provisioning start failed");
+    return;
+  }
+  wifi_started_ = true;
+  ESP_LOGI(kTag, "wifi provisioning started");
+}
+
+void PhoneNavBridge::wifi_scan_done(void* context) {
+  auto* self = static_cast<PhoneNavBridge*>(context);
+  std::uint16_t request_id = 0;
+  {
+    const std::lock_guard<std::mutex> lock(self->state_mutex_);
+    request_id = self->wifi_scan_request_id_;
+  }
+  if (request_id != 0U) {
+    self->send_wifi_scan_results(request_id);
+  }
+}
+
+void PhoneNavBridge::wifi_status_changed(const moto::wifi::Status& status,
+                                         void* context) {
+  auto* self = static_cast<PhoneNavBridge*>(context);
+  // Map the module state onto the wire enums (they are numerically identical).
+  moto::ble::WifiStatus message;
+  message.state = static_cast<std::uint8_t>(status.state);
+  message.rssi_dbm = status.rssi_dbm;
+  message.error = static_cast<std::uint8_t>(status.error);
+  message.ipv4_le = status.ipv4_le;
+  message.ssid = status.ssid;
+  ESP_LOGI(kTag, "wifi status: state=%u rssi=%d err=%u ip=%08x",
+           static_cast<unsigned>(message.state),
+           static_cast<int>(message.rssi_dbm),
+           static_cast<unsigned>(message.error),
+           static_cast<unsigned>(message.ipv4_le));
+  // P4 bring-up endpoint: bind /health once the station gets an address.
+  if (status.state == moto::wifi::State::Connected) {
+    moto::wifi::start_health_endpoint();
+  } else {
+    moto::wifi::stop_health_endpoint();
+  }
+  self->send_wifi_message(moto::ble::Message{message});
+}
+
+void PhoneNavBridge::send_wifi_message(const moto::ble::Message& message) {
+  SendCallback sender = nullptr;
+  void* sender_context = nullptr;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    if (sender_ == nullptr || !link_active_) {
+      return;
+    }
+    sender = sender_;
+    sender_context = sender_context_;
+  }
+  sender(message, moto::ble::Urgent, sender_context);
+}
+
+void PhoneNavBridge::send_wifi_status() {
+  const moto::wifi::Status status = wifi_.current_status();
+  moto::ble::WifiStatus message;
+  message.state = static_cast<std::uint8_t>(status.state);
+  message.rssi_dbm = status.rssi_dbm;
+  message.error = static_cast<std::uint8_t>(status.error);
+  message.ipv4_le = status.ipv4_le;
+  message.ssid = status.ssid;
+  send_wifi_message(moto::ble::Message{message});
+}
+
+moto::ble::AckStatus PhoneNavBridge::consume_wifi_config(
+    const moto::ble::WifiConfig& input) {
+  moto::wifi::Credentials credentials;
+  credentials.ssid = input.ssid;
+  credentials.password = input.password;
+  credentials.hidden =
+      (input.flags & moto::ble::WifiHiddenSsid) != 0U;
+  credentials.auto_reconnect =
+      (input.flags & moto::ble::WifiAutoReconnect) != 0U;
+  // Never log the password.
+  ESP_LOGI(kTag, "wifi config: action=%u ssid=%s flags=%02x",
+           static_cast<unsigned>(input.action), input.ssid.c_str(),
+           static_cast<unsigned>(input.flags));
+  esp_err_t result = ESP_OK;
+  switch (input.action) {
+    case moto::ble::WifiSaveAndConnect:
+      result = wifi_.save_and_connect(credentials);
+      break;
+    case moto::ble::WifiConnectTemporary:
+      result = wifi_.connect_temporary(credentials);
+      break;
+    case moto::ble::WifiDisconnect:
+      result = wifi_.disconnect();
+      break;
+    case moto::ble::WifiForget:
+      result = wifi_.forget();
+      break;
+    default:
+      return moto::ble::AckStatus::Failed;
+  }
+  return result == ESP_OK ? moto::ble::AckStatus::Ok
+                          : moto::ble::AckStatus::Failed;
+}
+
+moto::ble::AckStatus PhoneNavBridge::consume_wifi_scan_request(
+    const moto::ble::WifiScanRequest& input) {
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    wifi_scan_request_id_ = input.request_id;
+  }
+  if (wifi_.start_scan() != ESP_OK) {
+    return moto::ble::AckStatus::InvalidState;
+  }
+  // Results are delivered asynchronously from the scan-done path.
+  return moto::ble::AckStatus::Ok;
+}
+
+void PhoneNavBridge::send_wifi_scan_results(std::uint16_t request_id) {
+  moto::ble::WifiScanResult result;
+  result.request_id = request_id;
+  std::array<moto::wifi::WifiProvisioning::ScanAp,
+             moto::ble::kMaxWifiScanResults>
+      buffer{};
+  const std::size_t count = wifi_.copy_scan_results(buffer.data(), buffer.size());
+  result.access_points.reserve(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    moto::ble::WifiScanAp ap;
+    ap.rssi_dbm = buffer[i].rssi_dbm;
+    ap.auth = buffer[i].auth;
+    ap.ssid = buffer[i].ssid;
+    result.access_points.push_back(std::move(ap));
+  }
+  send_wifi_message(moto::ble::Message{result});
+}
+
 moto::ble::AckStatus PhoneNavBridge::on_message(
     const moto::ble::ReassembledMessage& message) {
   const auto decoded = moto::ble::decode_message(
@@ -813,6 +952,8 @@ moto::ble::AckStatus PhoneNavBridge::on_message(
             // transition emits it, so a repeated status does not spam the
             // display-data queue.
             send_ui_layout_state();
+            // Same rationale for WiFi (§5.5): one snapshot per Ready.
+            send_wifi_status();
           }
         } else if constexpr (std::is_same_v<T, moto::ble::Heartbeat>) {
           std::uint32_t phone_session_id = 0;
@@ -837,6 +978,10 @@ moto::ble::AckStatus PhoneNavBridge::on_message(
           return consume_map_scene(value);
         } else if constexpr (std::is_same_v<T, moto::ble::UiLayout>) {
           return consume_ui_layout(value);
+        } else if constexpr (std::is_same_v<T, moto::ble::WifiConfig>) {
+          return consume_wifi_config(value);
+        } else if constexpr (std::is_same_v<T, moto::ble::WifiScanRequest>) {
+          return consume_wifi_scan_request(value);
         } else if constexpr (std::is_same_v<T, moto::ble::Ack>) {
           ESP_LOGD(kTag, "phone ack sequence=%u command=%u status=%u",
                    value.acknowledged_sequence, value.command_id,
