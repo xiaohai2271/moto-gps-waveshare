@@ -42,6 +42,8 @@ class AndroidBleTransport(
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
 
     private val serviceUuid = UUID.fromString(BleProtocol.SERVICE_UUID)
+    /** The name the round display advertises; see ble_nav_transport_nimble.cpp. */
+    private val deviceName = "MOTO GPS"
     private val phoneToDeviceUuid = UUID.fromString(BleProtocol.PHONE_TO_DEVICE_UUID)
     private val deviceToPhoneUuid = UUID.fromString(BleProtocol.DEVICE_TO_PHONE_UUID)
     private val cccdUuid = UUID.fromString(BleProtocol.CCCD_UUID)
@@ -68,6 +70,10 @@ class AndroidBleTransport(
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device ?: return
             val name = runCatching { device.name }.getOrNull()
+            android.util.Log.d(
+                "MotoGpsBle",
+                "扫描到 ${name ?: "(无名称)"} ${device.address} ${result.rssi} dBm",
+            )
             listener.onScanResult(
                 DiscoveredDevice(device.address, name, result.rssi),
             )
@@ -256,15 +262,28 @@ class AndroidBleTransport(
             listener.onBluetoothUnavailable("BLE scanner unavailable")
             return
         }
+        // Match on the advertised service UUID *and* on the device name.
+        //
+        // The service-UUID filter alone is fragile across Android versions:
+        // the round display advertises its 128-bit UUID in a complete AD
+        // structure, and some stacks deliver such a packet to the platform
+        // scanner (which logs it) without ever matching a service-UUID
+        // filter. The name filter is what the user actually sees on the
+        // device, so it is an equally valid way to find the round display.
         val filter = ScanFilter.Builder()
             .setServiceUuid(ParcelUuid(serviceUuid))
+            .build()
+        val nameFilter = ScanFilter.Builder()
+            .setDeviceName(deviceName)
             .build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .build()
         scanning = true
-        runCatching { scanner.startScan(listOf(filter), settings, scanCallback) }
+        runCatching {
+            scanner.startScan(listOf(filter, nameFilter), settings, scanCallback)
+        }
             .onFailure {
                 scanning = false
                 listener.onError("startScan failed: ${it.message}")

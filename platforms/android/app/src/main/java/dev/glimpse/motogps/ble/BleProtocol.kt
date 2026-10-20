@@ -113,7 +113,7 @@ object BleProtocol {
         Capability.NAVIGATION or Capability.ROUTE_GEOMETRY or Capability.TRAFFIC or
             Capability.MEDIA_STATE or Capability.TOUCH_COMMANDS or
             Capability.MUSIC_COMMANDS or Capability.COMMAND_ACK or Capability.MAP_SCENE or
-            Capability.UI_LAYOUT
+            Capability.UI_LAYOUT or Capability.WIFI_PROVISIONING
 
     const val DEFAULT_HEARTBEAT_INTERVAL_MS = 1000
     const val DEVICE_LIVENESS_TIMEOUT_MS = 5000L
