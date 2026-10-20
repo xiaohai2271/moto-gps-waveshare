@@ -57,11 +57,12 @@ typedef struct {
     uint8_t id;        /* moto_ui_component_id_t */
     uint8_t enabled;   /* bit0 of the wire cflags */
     uint8_t size;      /* moto_ui_size_t */
-    uint8_t opacity;   /* 0..100, firmware clamps below 10 up to 10 */
+    uint8_t opacity;   /* background opacity 0..100, clamped below 10 to 10 */
     int16_t x;         /* non-arc top-left corner; 0 for arcs */
     int16_t y;
     uint8_t anchor;    /* moto_ui_arc_anchor_t; 0 for non-arcs */
     uint8_t span_deg;  /* 90 / 120 / 180; 0 for non-arcs */
+    uint8_t text_opacity; /* text/icon opacity; 0 means default 100 */
 } moto_ui_component_layout_t;
 
 /* Full navigation-page layout. This is the single object the renderer needs;

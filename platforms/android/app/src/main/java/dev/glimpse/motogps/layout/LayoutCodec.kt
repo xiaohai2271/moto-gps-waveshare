@@ -57,7 +57,8 @@ object LayoutCodec {
 
     private fun componentToInts(c: LayoutComponent): List<Int> = listOf(
         c.id.id,
-        if (c.enabled) COMPONENT_FLAG_ENABLED else 0,
+        (if (c.enabled) COMPONENT_FLAG_ENABLED else 0) or
+            ((c.textOpacity.coerceIn(0, 100) and 0x7F) shl 1),
         c.size.code,
         c.opacity.coerceIn(0, 100),
         if (c.isArc) 0 else c.x,

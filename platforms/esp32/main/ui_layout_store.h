@@ -145,7 +145,8 @@ inline bool valid_layout(const moto_ui_layout_t& layout) {
     if (component.enabled > 1) {
       return false;
     }
-    if (component.size > MOTO_UI_SIZE_L || component.opacity > 100) {
+    if (component.size > MOTO_UI_SIZE_L || component.opacity > 100 ||
+        component.text_opacity > 100) {
       return false;
     }
     const std::uint16_t bit =

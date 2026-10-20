@@ -369,6 +369,7 @@ moto_ui_layout_t to_renderer_layout(const moto::ble::UiLayout& input) {
                          : 0U;
     target.size = source.size;
     target.opacity = source.opacity;
+    target.text_opacity = source.text_opacity;
     target.x = source.x;
     target.y = source.y;
     target.anchor = source.anchor;

@@ -805,7 +805,9 @@ BytesResult encode_payload(const T& value) {
     writer.u8(static_cast<std::uint8_t>(value.components.size()));
     for (const UiLayoutComponent& component : value.components) {
       writer.u8(component.id);
-      writer.u8(component.flags);
+      writer.u8(static_cast<std::uint8_t>(
+          (component.flags & 0x01U) |
+          ((component.text_opacity & 0x7FU) << 1U)));
       writer.u8(component.size);
       writer.u8(component.opacity);
       writer.s16(component.x);
@@ -1162,6 +1164,10 @@ MessageResult decode_ui_layout(ByteView payload) {
         UiLayoutComponent component;
         component.id = reader.u8();
         component.flags = reader.u8();
+        component.text_opacity =
+            static_cast<std::uint8_t>((component.flags >> 1U) & 0x7FU);
+        component.flags = static_cast<std::uint8_t>(component.flags & 0x01U);
+        if (component.text_opacity == 0) component.text_opacity = 100;
         component.size = reader.u8();
         component.opacity = reader.u8();
         component.x = reader.s16();

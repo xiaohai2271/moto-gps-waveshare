@@ -361,7 +361,7 @@ private fun DrawScope.drawOneFreeComponent(
     textMeasurer: TextMeasurer,
     dragCenter: Offset?,
 ) {
-    val alpha = c.opacity / 100f
+    val alpha = c.textOpacity / 100f
     // 拖拽中的组件以手指所在中心点实时绘制，松手后才吸附并提交。
     val x = if (dragCenter != null) (dragCenter.x - ComponentSizes.sizeOf(c.id, c.size).first / 2f) else c.x.toFloat()
     val y = if (dragCenter != null) (dragCenter.y - ComponentSizes.sizeOf(c.id, c.size).second / 2f) else c.y.toFloat()
@@ -388,9 +388,9 @@ private fun DrawScope.drawOneFreeComponent(
             )
         }
         LayoutComponentId.SPEED_LIMIT -> {
-            drawCircle(PreviewText.copy(alpha = alpha), 30.5f * k, Offset(midX, midY))
+            drawCircle(PreviewText.copy(alpha = c.opacity / 100f), 30.5f * k, Offset(midX, midY))
             drawCircle(
-                PreviewSpeedLimit.copy(alpha = alpha), 30.5f * k, Offset(midX, midY),
+                PreviewSpeedLimit.copy(alpha = c.opacity / 100f), 30.5f * k, Offset(midX, midY),
                 style = Stroke(6f * k),
             )
             // 白底黑字：之前用白字直接画在白底上，真机有数字、预览却是空圆。

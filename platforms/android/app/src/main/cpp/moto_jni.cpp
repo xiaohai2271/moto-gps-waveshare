@@ -1324,6 +1324,11 @@ Java_dev_glimpse_motogps_NativeBridge_encodeUiLayout(
                  &component.span_deg)) {
       return nullptr;
     }
+    // Kotlin packs text opacity into flags bits 1..7.
+    component.text_opacity =
+        static_cast<std::uint8_t>((values[1] >> 1) & 0x7F);
+    component.flags = static_cast<std::uint8_t>(values[1] & 0x01);
+    if (component.text_opacity == 0) component.text_opacity = 100;
     layout.components.push_back(component);
   }
 

@@ -224,18 +224,20 @@ UiLayout ui_layout_fixture() {
   value.zoom_percent = 100;
   value.components = {
       {1, static_cast<std::uint8_t>(UiComponentEnabled), 1, 100, 185, 300, 0,
-       0},
+       0, 100},
       {2, static_cast<std::uint8_t>(UiComponentEnabled), 1, 100, 300, 238, 0,
-       0},
-      {3, 0, 1, 100, 24, 40, 0, 0},
+       0, 100},
+      {3, 0, 1, 100, 24, 40, 0, 0, 100},
       {4, static_cast<std::uint8_t>(UiComponentEnabled), 1, 100, 29, 220, 0,
-       0},
+       0, 100},
       {5, static_cast<std::uint8_t>(UiComponentEnabled), 1, 90, 150, 390, 0,
-       0},
+       0, 100},
       {6, static_cast<std::uint8_t>(UiComponentEnabled), 1, 90, 250, 390, 0,
-       0},
-      {7, static_cast<std::uint8_t>(UiComponentEnabled), 1, 80, 0, 0, 0, 120},
-      {8, static_cast<std::uint8_t>(UiComponentEnabled), 1, 80, 0, 0, 2, 120},
+       0, 100},
+      {7, static_cast<std::uint8_t>(UiComponentEnabled), 1, 80, 0, 0, 0, 120,
+       100},
+      {8, static_cast<std::uint8_t>(UiComponentEnabled), 1, 80, 0, 0, 2, 120,
+       100},
   };
   return value;
 }

@@ -58,6 +58,7 @@ object LayoutJson {
                 o.put("size", c.size.name)
             }
             o.put("opacity", c.opacity)
+            o.put("text_opacity", c.textOpacity)
             components.put(c.id.name.lowercase(), o)
         }
         root.put("components", components)
@@ -111,6 +112,7 @@ object LayoutJson {
                     anchor = anchorFromJson(o.optString("anchor", default.anchor.name.lowercase())),
                     spanDeg = o.optInt("span_deg", default.spanDeg),
                     opacity = o.optInt("opacity", default.opacity),
+                    textOpacity = o.optInt("text_opacity", default.textOpacity),
                 )
             } else {
                 default.copy(
@@ -119,6 +121,7 @@ object LayoutJson {
                     y = o.optInt("y", default.y),
                     size = sizeFromJson(o.optString("size", default.size.name)),
                     opacity = o.optInt("opacity", default.opacity),
+                    textOpacity = o.optInt("text_opacity", default.textOpacity),
                 )
             }
         }.associateBy { it.id }

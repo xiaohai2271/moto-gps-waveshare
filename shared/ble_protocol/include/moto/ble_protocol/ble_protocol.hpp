@@ -652,11 +652,17 @@ struct UiLayoutComponent {
   std::uint8_t id = 0;
   std::uint8_t flags = 0;
   std::uint8_t size = 0;
+  // Background opacity (0..100). Text opacity is packed into flags bits 1..7
+  // so the 10-byte component record and the v1 payload size stay unchanged;
+  // bit0 remains UiComponentEnabled. A packed value of 0 means "default 100".
   std::uint8_t opacity = 0;
   std::int16_t x = 0;
   std::int16_t y = 0;
   std::uint8_t anchor = 0;
   std::uint8_t span_deg = 0;
+  // Text/icon opacity (0..100); 0 means default 100. Kept after span_deg so
+  // the existing 8-value aggregate initialisers keep their meaning.
+  std::uint8_t text_opacity = 100;
 
   bool operator==(const UiLayoutComponent& rhs) const noexcept;
 };

@@ -352,6 +352,14 @@ int opacity_opa(std::uint8_t opacity) {
     return opacity * 255 / 100;
 }
 
+int text_opacity_opa(std::uint8_t opacity) {
+    // 0 is the wire default for "not specified": keep text fully visible.
+    if(opacity == 0) opacity = 100;
+    if(opacity > 100) opacity = 100;
+    if(opacity < 10) opacity = 10;
+    return opacity * 255 / 100;
+}
+
 /** LVGL arc centre angle for an anchor (0 deg = right, clockwise). */
 int anchor_center_angle(std::uint8_t anchor) {
     switch(anchor) {
@@ -466,13 +474,15 @@ void place_text_component(lv_obj_t *object,
     const lv_font_t *caption = caption_font_for_tier(c.size);
     lv_obj_set_style_text_font(object, font, 0);
     lv_obj_set_style_text_align(object, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_opa(object, opacity_opa(c.opacity), 0);
+    lv_obj_set_style_text_opa(object, text_opacity_opa(c.text_opacity), 0);
+    lv_obj_set_style_opa(object, LV_OPA_COVER, 0);
     const int line = lv_font_get_line_height(font);
     int total = line;
     if(secondary != nullptr) {
         lv_obj_set_style_text_font(secondary, caption, 0);
         lv_obj_set_style_text_align(secondary, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_opa(secondary, opacity_opa(c.opacity), 0);
+        lv_obj_set_style_text_opa(secondary, text_opacity_opa(c.text_opacity), 0);
+        lv_obj_set_style_opa(secondary, LV_OPA_COVER, 0);
         total += lv_font_get_line_height(caption) + 2;
     }
     lv_obj_set_size(object, width, line);
@@ -2879,10 +2889,14 @@ void apply_layout_internal(const moto_ui_layout_t *incoming) {
                 component_box(c.id, c.size, limit_width, limit_height);
                 lv_obj_set_size(ui.nav_limit, limit_width, limit_height);
                 lv_obj_set_pos(ui.nav_limit, c.x, c.y);
-                lv_obj_set_style_opa(ui.nav_limit, opacity_opa(c.opacity), 0);
+                lv_obj_set_style_opa(ui.nav_limit, LV_OPA_COVER, 0);
+                lv_obj_set_style_bg_opa(ui.nav_limit, opacity_opa(c.opacity), 0);
+                lv_obj_set_style_border_opa(ui.nav_limit,
+                                            opacity_opa(c.opacity), 0);
                 if(ui.nav_limit_value != nullptr) {
-                    lv_obj_set_style_opa(ui.nav_limit_value,
-                                         opacity_opa(c.opacity), 0);
+                    lv_obj_set_style_text_opa(
+                        ui.nav_limit_value,
+                        text_opacity_opa(c.text_opacity), 0);
                     lv_obj_center(ui.nav_limit_value);
                 }
                 break;

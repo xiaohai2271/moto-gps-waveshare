@@ -117,8 +117,10 @@ data class LayoutComponent(
     val id: LayoutComponentId,
     val enabled: Boolean,
     val size: LayoutSize = LayoutSize.M,
-    /** 透明度 10..100（协议 0..100；低于 10 不允许，§4.6）。 */
+    /** 背景透明度 10..100（协议 0..100；低于 10 不允许，§4.6）。 */
     val opacity: Int = 100,
+    /** 文字/图标透明度 10..100，与背景透明度独立配置。 */
+    val textOpacity: Int = 100,
     val x: Int = 0,
     val y: Int = 0,
     val anchor: LayoutArcAnchor = LayoutArcAnchor.TOP,

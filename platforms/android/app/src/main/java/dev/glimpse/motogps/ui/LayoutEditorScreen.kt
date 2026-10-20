@@ -282,12 +282,21 @@ private fun ComponentsTab(
             }
             EditorDivider()
             SliderRow(
-                "透明度",
+                "背景透明度",
                 component.opacity.toFloat(),
                 10f..100f,
                 valueLabel = "${component.opacity}%",
             ) { value ->
                 editor.updateComponent(id) { it.copy(opacity = value.toInt()) }
+            }
+            EditorDivider()
+            SliderRow(
+                "文字透明度",
+                component.textOpacity.toFloat(),
+                10f..100f,
+                valueLabel = "${component.textOpacity}%",
+            ) { value ->
+                editor.updateComponent(id) { it.copy(textOpacity = value.toInt()) }
             }
         }
     }
