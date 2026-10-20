@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextMeasurer
@@ -39,6 +40,7 @@ import dev.glimpse.motogps.layout.LayoutCanvas
 import dev.glimpse.motogps.layout.LayoutComponent
 import dev.glimpse.motogps.layout.LayoutComponentId
 import dev.glimpse.motogps.layout.LayoutGeometry
+import dev.glimpse.motogps.layout.LayoutOrientation
 import dev.glimpse.motogps.layout.LayoutSize
 import dev.glimpse.motogps.layout.UiLayout
 import kotlin.math.abs
@@ -189,7 +191,31 @@ fun DevicePreview(
                     size = Size(size.width, layout.map.heightPx * k),
                     alpha = layout.map.opacity / 100f,
                 )
-                drawDemoStreets(layout, k, showDemoData)
+                // The firmware rotates the whole map under a fixed rider when
+                // the layout is heading-up. Mirror that here, otherwise the
+                // synthetic preview route stays north-up and the device looks
+                // "rotated" after an unrelated map-height change.
+                val mapCenter = Offset(size.width / 2f, layout.map.heightPx * k / 2f)
+                if (layout.orientation == LayoutOrientation.HEADING_UP) {
+                    rotate(degrees = -PreviewDemoData.HEADING_DEG.toFloat(), pivot = mapCenter) {
+                        drawDemoStreets(layout, k, showDemoData)
+                    }
+                } else {
+                    drawDemoStreets(layout, k, showDemoData)
+                }
+                drawCanvasText(
+                    textMeasurer,
+                    if (layout.orientation == LayoutOrientation.HEADING_UP) {
+                        "设备向上"
+                    } else {
+                        "北向上"
+                    },
+                    14f,
+                    PreviewTextDim,
+                    Offset(28f * k, 20f * k),
+                    0.8f,
+                    k,
+                )
             }
 
             drawArcs(layout, k)
