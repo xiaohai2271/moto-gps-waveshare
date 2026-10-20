@@ -64,10 +64,17 @@ CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=185
 #     TX underflow detected".
 #   * The WiFi receive/transmit pools are trimmed so the driver fits into the
 #     internal RAM the display and BLE leave behind.
+#   * The NimBLE buffer pools are trimmed as well; a single BLE connection
+#     does not need the default headroom.
 #
 # CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP stays off on purpose: it is what puts
-# the WiFi buffers on the PSRAM bus that the display needs exclusively.
+# the WiFi buffers on the PSRAM bus that the display needs.
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=8
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=12
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=12
+CONFIG_BT_NIMBLE_HCI_EVT_HI_BUF_COUNT=20
+CONFIG_BT_NIMBLE_HCI_EVT_LO_BUF_COUNT=4
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4

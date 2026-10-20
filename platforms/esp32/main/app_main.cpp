@@ -222,13 +222,15 @@ extern "C" void app_main(void) {
   // Demo generation fills the retained snapshot in place, but geometry and
   // LVGL projection still use deeper C++ call frames than a trivial task.
   // Task stacks are always allocated from internal RAM, which the WiFi and
-  // BLE controllers also compete for. Both workers below only touch the
-  // retained snapshot and the presenter, so small stacks are enough.
+  // BLE controllers also compete for. The demo worker only touches the
+  // retained snapshot and the presenter, so a small stack is enough; the
+  // power worker needs more because it calls into the AXP2101 power-off
+  // path, which nests several driver frames.
   if (xTaskCreate(demo_tick_task, "moto_demo", 3'072, &phone_bridge, 2,
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "navigation demo task could not start");
   }
-  if (xTaskCreate(power_button_task, "moto_power", 2'048, nullptr, 3,
+  if (xTaskCreate(power_button_task, "moto_power", 3'072, nullptr, 3,
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "PWR long-hold task could not start");
   }
