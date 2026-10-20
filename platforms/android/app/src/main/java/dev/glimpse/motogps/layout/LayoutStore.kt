@@ -47,6 +47,21 @@ class LayoutStore(context: Context) {
         return next
     }
 
+    /**
+     * 把本地 revision 抬到至少 [deviceRevision] + 1（§5.6 设备 revision 单调）。
+     * 场景：app 重装/清数据后本地 revision 从 0 开始，而设备 NVS 里已有更高的
+     * revision —— 不对齐的话每次推送都会被设备以 Duplicate 拒绝（真机验证到的
+     * bug：设备报 revision=167，app 推 revision=17/18 被拒但 UI 显示已同步）。
+     * 内容保持不变，只改 revision；持久化立即生效。
+     */
+    fun ensureRevisionAbove(deviceRevision: Int): UiLayout {
+        if (_layout.value.revision > deviceRevision) return _layout.value
+        val next = _layout.value.copy(revision = deviceRevision + 1)
+        prefs.edit().putString(KEY_LAYOUT, LayoutJson.encode(next)).apply()
+        _layout.value = next
+        return next
+    }
+
     private companion object {
         const val KEY_LAYOUT = "ui_layout_v1"
     }

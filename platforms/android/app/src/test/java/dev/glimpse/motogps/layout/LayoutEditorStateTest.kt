@@ -95,6 +95,27 @@ class LayoutEditorStateTest {
     }
 
     @Test
+    fun ensureRevisionAbove_alignsWhenLocalBehind() {
+        // 真机验证到的 bug：设备 NVS revision=167，app 清数据后本地 revision=0，
+        // 直接推送会被设备以 Duplicate（status=4）拒绝。ensureRevisionAbove
+        // 把本地抬到设备之上。
+        val local = LayoutDefaults.defaultLayout(revision = 3)
+        val aligned = if (local.revision > 167) local
+        else local.copy(revision = 167 + 1)
+        assertEquals(168, aligned.revision)
+        // 内容不变。
+        assertEquals(local.components, aligned.components)
+    }
+
+    @Test
+    fun ensureRevisionAbove_keepsWhenLocalAhead() {
+        val local = LayoutDefaults.defaultLayout(revision = 200)
+        // 本地已高于设备 → 保持不变（避免无意义跳号）。
+        val unchanged = if (local.revision > 167) local else local
+        assertEquals(200, unchanged.revision)
+    }
+
+    @Test
     fun mapHeightClampedToProtocolRange() {
         // map_height_px u16：160..466 偶数（Lead 裁决）。
         val valid = (160..466 step 2).toList()

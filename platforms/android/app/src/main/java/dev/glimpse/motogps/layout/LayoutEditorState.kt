@@ -162,8 +162,13 @@ class LayoutEditorState(private val store: LayoutStore) {
 
     /** 收到 UiLayoutState：比较版本决定是否推送。 */
     fun onDeviceLayoutState(device: DeviceLayoutState): Boolean {
-        val needsPush = device.layoutRevision != layout.revision
+        // 设备 revision 单调（§5.6）。app 重装/清数据后本地计数可能低于设备
+        // NVS 里的值 —— 先抬升本地 revision，否则推送会被设备当 Duplicate 拒绝。
+        store.ensureRevisionAbove(device.layoutRevision)
+        val current = _state.value.layout
+        val needsPush = device.layoutRevision != current.revision
         _state.value = _state.value.copy(
+            layout = current,
             deviceSupportedMask = device.supportedMask,
             deviceLayoutRevision = device.layoutRevision,
             syncState = if (needsPush) SyncState.PENDING else SyncState.SYNCED,
