@@ -1,10 +1,11 @@
-﻿#include "phone_nav_bridge.h"
+#include "phone_nav_bridge.h"
 #include "phone_nav_bridge_test_probe.hpp"
 #include "demo_fixture/jinan_big_data_demo.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -570,6 +571,380 @@ void test_imu_presentation_preserves_40hz_phase_and_stale_course_is_ignored() {
   CHECK(moto::test::phone_nav_bridge_last_heading_deg() == before_stale);
 }
 
+// --- Editable navigation layout (docs/NAV_LAYOUT_EDITOR_PLAN.md §5.3/§5.6/§6.5) ---
+
+// Captures the layout bookkeeping messages the bridge emits so a test can assert
+// what the phone is told about the layout in effect.
+struct LayoutSenderContext {
+  int messages = 0;
+  int states = 0;
+  moto::ble::UiLayoutState last{};
+};
+
+bool record_layout_sender(const moto::ble::Message& message,
+                          std::uint8_t,
+                          void* context) {
+  auto* sender = static_cast<LayoutSenderContext*>(context);
+  ++sender->messages;
+  if (const auto* state = std::get_if<moto::ble::UiLayoutState>(&message)) {
+    ++sender->states;
+    sender->last = *state;
+  }
+  return true;
+}
+
+// A layout that exercises every field the bridge has to transcribe, with the
+// eight components in a deliberately non-default shape.
+moto::ble::UiLayout layout_fixture(std::uint16_t revision) {
+  moto::ble::UiLayout layout;
+  layout.layout_revision = revision;
+  layout.flags = moto::ble::UiLayoutNorthUp |
+                 moto::ble::UiLayoutMusicPageEnabled |
+                 moto::ble::UiLayoutMapVisible;
+  layout.theme = static_cast<std::uint8_t>(moto::ble::UiThemeId::Light);
+  layout.map_height_px = 320;
+  layout.map_opacity = 70;
+  layout.route_r = 0x12;
+  layout.route_g = 0x34;
+  layout.route_b = 0x56;
+  layout.route_width_px = 9;
+  layout.route_opacity = 60;
+  layout.street_r = 0x65;
+  layout.street_g = 0x43;
+  layout.street_b = 0x21;
+  layout.street_width_px = 5;
+  layout.street_opacity = 45;
+  layout.building_opacity = 15;
+  layout.layer_mask = moto::ble::UiLayerRoads | moto::ble::UiLayerRoute;
+  layout.zoom_percent = 150;
+  layout.components = {
+      // id, flags(enabled), size, opacity, x, y, anchor, span_deg
+      {1, 1, 0, 100, 10, 20, 0, 0},     // speed, S
+      {2, 0, 2, 90, 300, 240, 0, 0},    // speed limit, L, hidden
+      {3, 1, 1, 55, 24, 40, 0, 0},      // heading
+      {4, 1, 1, 100, 30, 210, 0, 0},    // maneuver
+      {5, 1, 0, 80, 120, 390, 0, 0},    // remaining distance
+      {6, 0, 2, 70, 260, 390, 0, 0},    // remaining time
+      {7, 1, 1, 65, 0, 0, 0, 180},      // progress arc, top, 180 deg
+      {8, 1, 2, 35, 0, 0, 2, 90},       // speed arc, bottom, 90 deg
+  };
+  return layout;
+}
+
+// apply_pending_layout() measures the debounce with the monotonic clock, so a
+// host test has to let the real 2 s window elapse (plan §5.6).
+void wait_for_layout_debounce() {
+  std::this_thread::sleep_for(std::chrono::milliseconds(2'100));
+}
+
+void test_layout_is_applied_only_after_the_debounce_and_is_persisted() {
+  moto::test::reset_phone_nav_bridge_probe();
+  moto_ui_layout_store::factory_reset();
+  moto::nav::NavPresenter presenter;
+  PhoneNavBridge bridge(presenter);
+  LayoutSenderContext sender;
+  bridge.set_sender(record_layout_sender, &sender);
+  bridge.install_ui_callbacks();
+  bridge.on_link_state(true);
+
+  // No record on flash yet: the constructor's restore falls back to the
+  // documented default layout.
+  CHECK(moto::test::phone_nav_bridge_layout_apply_count() >= 1);
+  const int baseline = moto::test::phone_nav_bridge_layout_apply_count();
+  moto_ui_layout_t restored = moto::test::phone_nav_bridge_last_applied_layout();
+  CHECK(restored.north_up == 1);
+  CHECK(restored.map_height_px == MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT);
+  CHECK(restored.zoom_percent == 100);
+  CHECK(restored.component_count == MOTO_UI_LAYOUT_COMPONENT_COUNT);
+  moto_ui_layout_t unused{};
+  std::uint16_t unused_revision = 0;
+  CHECK(!moto_ui_layout_store::load(&unused, &unused_revision));
+
+  // A push is acknowledged immediately but not applied in the same frame: the
+  // debounce window collapses a drag burst into a single flash write.
+  const moto::ble::UiLayout pushed = layout_fixture(7);
+  CHECK(bridge.on_message(make_message(moto::ble::Message{pushed}, 1)) ==
+        moto::ble::AckStatus::Ok);
+  CHECK(moto::test::phone_nav_bridge_layout_apply_count() == baseline);
+  bridge.apply_pending_layout();
+  CHECK(moto::test::phone_nav_bridge_layout_apply_count() == baseline);
+
+  wait_for_layout_debounce();
+  bridge.apply_pending_layout();
+  CHECK(moto::test::phone_nav_bridge_layout_apply_count() == baseline + 1);
+
+  const moto_ui_layout_t applied =
+      moto::test::phone_nav_bridge_last_applied_layout();
+  CHECK(applied.north_up == 1);
+  CHECK(applied.music_page_enabled == 1);
+  CHECK(applied.map_visible == 1);
+  CHECK(applied.theme_id == static_cast<std::uint8_t>(moto::ble::UiThemeId::Light));
+  CHECK(applied.map_height_px == 320);
+  CHECK(applied.map_opacity == 70);
+  CHECK(applied.route_r == 0x12);
+  CHECK(applied.route_g == 0x34);
+  CHECK(applied.route_b == 0x56);
+  CHECK(applied.route_width_px == 9);
+  CHECK(applied.route_opacity == 60);
+  CHECK(applied.street_width_px == 5);
+  CHECK(applied.street_opacity == 45);
+  CHECK(applied.building_opacity == 15);
+  CHECK(applied.layer_mask == (moto::ble::UiLayerRoads | moto::ble::UiLayerRoute));
+  CHECK(applied.zoom_percent == 150);
+  CHECK(applied.component_count == 8);
+  CHECK(applied.components[0].id == MOTO_UI_COMPONENT_SPEED);
+  CHECK(applied.components[0].size == MOTO_UI_SIZE_S);
+  CHECK(applied.components[1].enabled == 0);
+  CHECK(applied.components[6].anchor == MOTO_UI_ARC_TOP);
+  CHECK(applied.components[6].span_deg == 180);
+  CHECK(applied.components[7].anchor == MOTO_UI_ARC_BOTTOM);
+  CHECK(applied.components[7].span_deg == 90);
+
+  // ...and the accepted layout is durable: a fresh boot reads it back at the
+  // same revision instead of reverting to the default.
+  moto_ui_layout_t stored{};
+  std::uint16_t stored_revision = 0;
+  CHECK(moto_ui_layout_store::load(&stored, &stored_revision));
+  CHECK(stored_revision == 7);
+  CHECK(std::memcmp(&stored, &applied, sizeof(stored)) == 0);
+
+  // The phone is told the layout is in effect and safely stored (§5.4).
+  CHECK(sender.states >= 1);
+  CHECK(sender.last.layout_revision == 7);
+  CHECK(sender.last.supported_mask == 0xFF);
+  CHECK((sender.last.flags & moto::ble::UiLayoutNvsSaved) != 0U);
+}
+
+void test_layout_duplicate_and_rollback_revisions_are_not_reapplied() {
+  moto::test::reset_phone_nav_bridge_probe();
+  moto_ui_layout_store::factory_reset();
+  moto::nav::NavPresenter presenter;
+  PhoneNavBridge bridge(presenter);
+  bridge.install_ui_callbacks();
+  bridge.on_link_state(true);
+  bridge.restore_layout();
+  const int baseline = moto::test::phone_nav_bridge_layout_apply_count();
+
+  CHECK(bridge.on_message(make_message(moto::ble::Message{layout_fixture(9)}, 1)) ==
+        moto::ble::AckStatus::Ok);
+  wait_for_layout_debounce();
+  bridge.apply_pending_layout();
+  CHECK(moto::test::phone_nav_bridge_layout_apply_count() == baseline + 1);
+
+  // A retransmission of the revision already in effect is answered without
+  // touching flash or the renderer (§5.6).
+  CHECK(bridge.on_message(make_message(moto::ble::Message{layout_fixture(9)}, 2)) ==
+        moto::ble::AckStatus::Duplicate);
+  // Revision 0 is not a valid layout version either.
+  CHECK(bridge.on_message(make_message(moto::ble::Message{layout_fixture(0)}, 3)) ==
+        moto::ble::AckStatus::Duplicate);
+  // An older revision never rolls the device back (§6.5).
+  CHECK(bridge.on_message(make_message(moto::ble::Message{layout_fixture(4)}, 4)) ==
+        moto::ble::AckStatus::Duplicate);
+  wait_for_layout_debounce();
+  bridge.apply_pending_layout();
+  CHECK(moto::test::phone_nav_bridge_layout_apply_count() == baseline + 1);
+  moto_ui_layout_t stored{};
+  std::uint16_t stored_revision = 0;
+  CHECK(moto_ui_layout_store::load(&stored, &stored_revision));
+  CHECK(stored_revision == 9);
+}
+
+void test_layout_burst_coalesces_into_one_final_write() {
+  moto::test::reset_phone_nav_bridge_probe();
+  moto_ui_layout_store::factory_reset();
+  moto::nav::NavPresenter presenter;
+  PhoneNavBridge bridge(presenter);
+  bridge.install_ui_callbacks();
+  bridge.on_link_state(true);
+  bridge.restore_layout();
+
+  // Two pushes inside the debounce window: only the final version is applied
+  // and written, and the first one is never persisted (§5.6).
+  CHECK(bridge.on_message(make_message(moto::ble::Message{layout_fixture(20)}, 1)) ==
+        moto::ble::AckStatus::Ok);
+  CHECK(bridge.on_message(make_message(moto::ble::Message{layout_fixture(21)}, 2)) ==
+        moto::ble::AckStatus::Ok);
+  bridge.apply_pending_layout();
+  moto_ui_layout_t stored{};
+  std::uint16_t stored_revision = 0;
+  CHECK(!moto_ui_layout_store::load(&stored, &stored_revision));
+
+  wait_for_layout_debounce();
+  bridge.apply_pending_layout();
+  CHECK(moto_ui_layout_store::load(&stored, &stored_revision));
+  CHECK(stored_revision == 21);
+  CHECK(moto::test::phone_nav_bridge_last_applied_layout().zoom_percent == 150);
+}
+
+void test_layout_restores_the_persisted_record_instead_of_the_default() {
+  moto::test::reset_phone_nav_bridge_probe();
+  moto_ui_layout_store::factory_reset();
+  // A layout written by an earlier power cycle: the next boot must show it
+  // rather than the built-in default (§6.5).
+  moto_ui_layout_t previous{};
+  previous.north_up = 0;
+  previous.music_page_enabled = 0;
+  previous.map_visible = 1;
+  previous.theme_id = static_cast<std::uint8_t>(moto::ble::UiThemeId::HighContrast);
+  previous.map_height_px = 400;
+  previous.map_opacity = 55;
+  previous.route_r = 0xAA;
+  previous.route_g = 0xBB;
+  previous.route_b = 0xCC;
+  previous.route_width_px = 4;
+  previous.route_opacity = 100;
+  previous.street_r = 0x11;
+  previous.street_g = 0x22;
+  previous.street_b = 0x33;
+  previous.street_width_px = 2;
+  previous.street_opacity = 20;
+  previous.building_opacity = 10;
+  previous.layer_mask = moto::ble::UiLayerBuildings;
+  previous.zoom_percent = 60;
+  previous.component_count = 1;
+  previous.components[0] = {MOTO_UI_COMPONENT_SPEED, 1, MOTO_UI_SIZE_L, 100,
+                            5, 6, 0, 0};
+  CHECK(moto_ui_layout_store::save(&previous, 33));
+
+  moto::nav::NavPresenter presenter;
+  PhoneNavBridge bridge(presenter);
+  bridge.install_ui_callbacks();
+  bridge.on_link_state(true);
+  bridge.restore_layout();
+  const moto_ui_layout_t restored =
+      moto::test::phone_nav_bridge_last_applied_layout();
+  CHECK(std::memcmp(&restored, &previous, sizeof(restored)) == 0);
+  CHECK(restored.north_up == 0);
+  CHECK(restored.map_height_px == 400);
+  CHECK(restored.zoom_percent == 60);
+
+  // The restored revision is in effect, so a push repeating it is answered as a
+  // duplicate and the record is left alone (§5.4/§5.6).
+  const int baseline = moto::test::phone_nav_bridge_layout_apply_count();
+  CHECK(bridge.on_message(make_message(moto::ble::Message{layout_fixture(33)}, 2)) ==
+        moto::ble::AckStatus::Duplicate);
+  CHECK(moto::test::phone_nav_bridge_layout_apply_count() == baseline);
+}
+
+void test_layout_malformed_payload_is_rejected_without_touching_the_screen() {
+  moto::test::reset_phone_nav_bridge_probe();
+  moto_ui_layout_store::factory_reset();
+  moto::nav::NavPresenter presenter;
+  PhoneNavBridge bridge(presenter);
+  bridge.install_ui_callbacks();
+  bridge.on_link_state(true);
+  bridge.restore_layout();
+  const int baseline = moto::test::phone_nav_bridge_layout_apply_count();
+  const moto_ui_layout_t before = moto::test::phone_nav_bridge_last_applied_layout();
+
+  moto::ble::ReassembledMessage message =
+      make_message(moto::ble::Message{layout_fixture(40)}, 1);
+  // Component records start after the 22-byte header and are 10 bytes each;
+  // span_deg is the last byte. An arc span of 100° is not a legal value, so the
+  // whole layout must be refused (§5.3), not partially applied.
+  const std::size_t span_offset = 22 + 7 * 10 + 9;
+  CHECK(message.payload.size() > span_offset);
+  CHECK(message.payload[span_offset] == 90);
+  message.payload[span_offset] = 100;
+  CHECK(bridge.on_message(message) == moto::ble::AckStatus::Failed);
+  wait_for_layout_debounce();
+  bridge.apply_pending_layout();
+  CHECK(moto::test::phone_nav_bridge_layout_apply_count() == baseline);
+  CHECK(std::memcmp(&before, &moto::test::phone_nav_bridge_last_applied_layout(),
+                    sizeof(before)) == 0);
+  moto_ui_layout_t stored{};
+  std::uint16_t stored_revision = 0;
+  CHECK(!moto_ui_layout_store::load(&stored, &stored_revision));
+
+  // Trailing bytes are rejected as well, so a newer protocol revision cannot be
+  // silently reinterpreted by this firmware (§5.3).
+  moto::ble::ReassembledMessage trailing =
+      make_message(moto::ble::Message{layout_fixture(41)}, 2);
+  trailing.payload.push_back(0);
+  CHECK(bridge.on_message(trailing) == moto::ble::AckStatus::Failed);
+  CHECK(moto::test::phone_nav_bridge_layout_apply_count() == baseline);
+}
+
+// Reproduces the one genuine race in the layout path: a phone push that lands
+// after the bridge has read the pending layout but before its flash write has
+// finished. The newer layout must survive, because the bridge has already
+// acknowledged it (§5.6) — dropping it would be a silent lost update.
+struct PendingPushHook {
+  PhoneNavBridge* bridge = nullptr;
+  moto::ble::UiLayout layout{};
+  std::uint16_t sequence = 500;
+  bool fired = false;
+};
+
+PendingPushHook* pending_push_hook = nullptr;
+
+void fire_pending_push_hook() {
+  if (pending_push_hook == nullptr || pending_push_hook->fired) {
+    return;
+  }
+  pending_push_hook->fired = true;
+  pending_push_hook->bridge->on_message(
+      make_message(moto::ble::Message{pending_push_hook->layout},
+                   pending_push_hook->sequence));
+}
+
+void test_layout_pushed_during_the_flash_write_is_not_lost() {
+  moto::test::reset_phone_nav_bridge_probe();
+  moto_ui_layout_store::factory_reset();
+  moto::nav::NavPresenter presenter;
+  PhoneNavBridge bridge(presenter);
+  bridge.install_ui_callbacks();
+  bridge.on_link_state(true);
+  bridge.restore_layout();
+
+  CHECK(bridge.on_message(make_message(moto::ble::Message{layout_fixture(60)}, 1)) ==
+        moto::ble::AckStatus::Ok);
+  wait_for_layout_debounce();
+
+  // The newer push differs visibly, so the applied layout identifies which
+  // revision really won.
+  moto::ble::UiLayout newer = layout_fixture(61);
+  newer.zoom_percent = 90;
+  newer.map_height_px = 200;
+  PendingPushHook hook;
+  hook.bridge = &bridge;
+  hook.layout = newer;
+  pending_push_hook = &hook;
+  bridge.set_before_layout_persist_hook(fire_pending_push_hook);
+
+  bridge.apply_pending_layout();
+  bridge.set_before_layout_persist_hook(nullptr);
+  pending_push_hook = nullptr;
+  CHECK(hook.fired);
+
+  // The first pass wrote revision 60 while revision 61 arrived. It must have
+  // been written (it was already on screen) but it may not be the final record.
+  {
+    moto_ui_layout_t interim{};
+    std::uint16_t interim_revision = 0;
+    CHECK(moto_ui_layout_store::load(&interim, &interim_revision));
+    CHECK(interim_revision == 60);
+  }
+
+  // The superseded push has to be settled on a later frame, not discarded.
+  wait_for_layout_debounce();
+  bridge.apply_pending_layout();
+  const moto_ui_layout_t applied =
+      moto::test::phone_nav_bridge_last_applied_layout();
+  CHECK(applied.zoom_percent == 90);
+  CHECK(applied.map_height_px == 200);
+  moto_ui_layout_t stored{};
+  std::uint16_t stored_revision = 0;
+  CHECK(moto_ui_layout_store::load(&stored, &stored_revision));
+  CHECK(stored_revision == 61);
+  CHECK(stored.zoom_percent == 90);
+
+  // Now that revision 61 is in effect, repeating it is a duplicate.
+  CHECK(bridge.on_message(make_message(moto::ble::Message{newer}, 3)) ==
+        moto::ble::AckStatus::Duplicate);
+}
+
 }  // namespace
 
 int main() {
@@ -582,6 +957,12 @@ int main() {
   test_ios_demo_token_attaches_context_and_live_route_clears_it();
   test_map_scene_atomically_replaces_roads_and_buildings_at_capacity();
   test_imu_presentation_preserves_40hz_phase_and_stale_course_is_ignored();
+  test_layout_is_applied_only_after_the_debounce_and_is_persisted();
+  test_layout_duplicate_and_rollback_revisions_are_not_reapplied();
+  test_layout_burst_coalesces_into_one_final_write();
+  test_layout_restores_the_persisted_record_instead_of_the_default();
+  test_layout_malformed_payload_is_rejected_without_touching_the_screen();
+  test_layout_pushed_during_the_flash_write_is_not_lost();
 
   if (failures != 0) {
     std::cerr << failures << " phone navigation bridge checks failed\n";

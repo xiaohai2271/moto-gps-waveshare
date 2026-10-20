@@ -33,6 +33,11 @@ class PhoneNavBridge {
   // Deterministic pump for native tests. Production firmware always uses the
   // task created by start_renderer().
   void render_pending_for_test();
+  // Host-test seam: runs after a pushed layout has been snapshotted and before
+  // it is written to flash, so a test can inject the "phone pushed again while
+  // the write was still in flight" race deterministically. Never compiled into
+  // firmware.
+  void set_before_layout_persist_hook(void (*hook)(void)) noexcept;
 #endif
   void on_link_state(bool active);
   void on_imu_sample(float heading_rate_dps, std::uint64_t sample_ms);
@@ -180,4 +185,7 @@ class PhoneNavBridge {
   bool wifi_started_ = false;
   moto::wifi::WifiProvisioning wifi_;
   moto_ui_layout_t render_layout_{};
+#ifndef ESP_PLATFORM
+  void (*before_layout_persist_hook_)(void) = nullptr;
+#endif
 };
