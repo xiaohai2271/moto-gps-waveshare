@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.glimpse.motogps.layout.BasemapTheme
+import dev.glimpse.motogps.layout.BasemapThemes
 import dev.glimpse.motogps.layout.LayoutArcAnchor
 import dev.glimpse.motogps.layout.LayoutArcSpan
 import dev.glimpse.motogps.layout.LayoutColor
@@ -295,9 +296,10 @@ private fun BasemapTab(editor: LayoutEditorState) {
     val state by editor.state.collectAsState()
     val basemap = state.layout.basemap
 
-    EditorSection(header = "主题预设", footer = "底图为矢量主题；本期不提供影像来源选项。") {
+    EditorSection(header = "主题预设", footer = "切换主题会改写下方路线/街道样式；底图为矢量主题，本期不提供影像来源选项。") {
         SegmentedRow("主题", BasemapTheme.entries.map { it.label }) { index ->
-            editor.updateBasemap { it.copy(theme = BasemapTheme.entries[index]) }
+            val theme = BasemapTheme.entries[index]
+            editor.updateBasemap { BasemapThemes.apply(it, theme) }
         }
     }
 
