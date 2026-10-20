@@ -27,17 +27,20 @@ The default build also produces `moto_device_sim`: the real firmware bridge, the
 LVGL UI and a loopback BLE link.
 
 ```sh
-./build/native/bin/moto_device_sim --selftest --frames build/native/frames
+./build/native/bin/moto_device_sim --list-cases
+./build/native/bin/moto_device_sim --case baseline --port 0
+./build/native/bin/moto_device_sim --case layout-rules --port 0
 ```
 
-The self-test covers the handshake, heartbeats, navigation/geometry/map/media/layout,
-WiFi provisioning, and asserts the round-display UI state and a changed framebuffer.
-CI runs it through `ctest`. A debug Android build can attach to the same process
-(`adb reverse tcp:9100` plus the `files/ble_sim` marker) without an ESP32.
-See `platforms/desktop/README.md` for details and limits.
+`ctest` runs the whole matrix (currently 10 simulator cases + 9 unit tests). The cases
+cover normal navigation, reconnection, layout revision rules, geometry generation
+mismatch/recovery, WiFi failure paths, acquiring/arrived/offline states and maximum
+fragmentation. See [`TEST_STRATEGY.md`](TEST_STRATEGY.md) for the dimension model and
+closure criteria, and `platforms/desktop/README.md` for details.
 
-It does not verify BLE RF/pairing/background liveness, the CO5300 panel, PSRAM pressure,
-QMI8658, power, or real road routes.
+A debug Android build can attach to the same process (`adb reverse tcp:9100` plus the
+`files/ble_sim` marker) without an ESP32. It does not verify BLE RF/pairing/background
+liveness, the CO5300 panel, PSRAM pressure, QMI8658, power, or real road routes.
 
 ## Node gateway
 

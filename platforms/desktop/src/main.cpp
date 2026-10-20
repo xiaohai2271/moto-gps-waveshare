@@ -3,9 +3,9 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "device_sim.h"
 #include "esp_timer.h"
@@ -27,16 +27,19 @@ void print_usage() {
       "moto_device_sim - host virtual device for the MOTO GPS round display\n"
       "\n"
       "Usage:\n"
-      "  moto_device_sim [--port N] [--selftest] [--frames DIR]\n"
+      "  moto_device_sim [--port N] [--selftest | --case ID] [--frames DIR]\n"
       "                  [--seconds N] [--verbose]\n"
+      "  moto_device_sim --list-cases\n"
       "\n"
       "Options:\n"
-      "  --port N      TCP port for the phone link (0 = ephemeral, default 9100)\n"
-      "  --selftest    Run the scripted phone against the device and exit\n"
-      "  --frames DIR  Write 466x466 BMP snapshots to DIR\n"
-      "  --seconds N   Stop after N seconds (server mode)\n"
-      "  --verbose     Log firmware diagnostics (or set MOTO_SIM_VERBOSE=1)\n"
-      "  --help        Show this message\n"
+      "  --port N       TCP port for the phone link (0 = ephemeral, default 9100)\n"
+      "  --selftest     Run the baseline case (alias for --case baseline)\n"
+      "  --case ID      Run one deterministic end-to-end case and exit\n"
+      "  --list-cases   List case ids and descriptions\n"
+      "  --frames DIR   Write 466x466 BMP snapshots to DIR\n"
+      "  --seconds N    Stop after N seconds (server mode)\n"
+      "  --verbose      Log firmware diagnostics (or set MOTO_SIM_VERBOSE=1)\n"
+      "  --help         Show this message\n"
       "\n"
       "The phone link carries one length-prefixed encoded BLE frame per\n"
       "message. See platforms/desktop/README.md.\n");
@@ -46,7 +49,9 @@ void print_usage() {
 
 int main(int argc, char** argv) {
   moto::sim::DeviceSimOptions options;
+  std::string case_id;
   bool selftest = false;
+  bool list_cases = false;
   bool verbose = false;
   std::string frames_dir;
   int seconds = 0;
@@ -59,6 +64,10 @@ int main(int argc, char** argv) {
     }
     if(argument == "--selftest") {
       selftest = true;
+      continue;
+    }
+    if(argument == "--list-cases") {
+      list_cases = true;
       continue;
     }
     if(argument == "--verbose") {
@@ -74,6 +83,10 @@ int main(int argc, char** argv) {
     };
     if(argument == "--port") {
       options.port = static_cast<std::uint16_t>(std::atoi(value("--port")));
+      continue;
+    }
+    if(argument == "--case") {
+      case_id = value("--case");
       continue;
     }
     if(argument == "--frames") {
@@ -92,6 +105,18 @@ int main(int argc, char** argv) {
 
   moto::sim::set_verbose(verbose);
 
+  if(list_cases) {
+    for(const auto& entry : moto::sim::cases()) {
+      std::printf("%-18s %s\n", entry.id.c_str(),
+                  entry.description.c_str());
+    }
+    return 0;
+  }
+
+  if(selftest && case_id.empty()) {
+    case_id = "baseline";
+  }
+
   std::signal(SIGINT, handle_signal);
 #ifdef SIGTERM
   std::signal(SIGTERM, handle_signal);
@@ -104,14 +129,16 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  if(selftest) {
+  if(!case_id.empty()) {
     std::string failure;
-    const bool ok = moto::sim::run_selftest(sim, !frames_dir.empty(), &failure);
+    const bool ok =
+        moto::sim::run_case(sim, case_id, !frames_dir.empty(), &failure);
     if(!ok) {
-      std::fprintf(stderr, "SELFTEST FAIL: %s\n", failure.c_str());
+      std::fprintf(stderr, "CASE FAIL %s: %s\n", case_id.c_str(),
+                   failure.c_str());
       return 1;
     }
-    std::printf("SELFTEST PASS (port %u, protocol Ready)\n",
+    std::printf("CASE PASS %s (port %u)\n", case_id.c_str(),
                 static_cast<unsigned>(sim.port()));
     if(!frames_dir.empty()) {
       std::printf("Frames: %s\n", frames_dir.c_str());
@@ -127,7 +154,6 @@ int main(int argc, char** argv) {
   std::fflush(stdout);
 
   const std::uint64_t started_ms = now_ms();
-
   while(!g_stop.load()) {
     sim.tick(now_ms());
     if(seconds > 0 && now_ms() - started_ms >=

@@ -33,28 +33,36 @@ cmake --build build/native
 
 产物固定写到 `build/native/bin/moto_device_sim`（Windows 为 `.exe`）。
 
-## 自检（CI 用，不需要 Android）
+## 用例矩阵（CI 用，不需要 Android）
 
 ```sh
-./build/native/bin/moto_device_sim --selftest --frames build/native/frames
+./build/native/bin/moto_device_sim --list-cases
+./build/native/bin/moto_device_sim --case baseline --port 0 --frames build/native/frames
+ctest --test-dir build/native --output-on-failure
 ```
 
-自检会在后台启动一个"脚本手机"，通过 TCP 走完整条链路：
+每个用例都是独立进程、独立端口、独立断言；`ctest` 会逐项注册和报告。
+测试策略与闭环判据见 [`docs/TEST_STRATEGY.md`](../../docs/TEST_STRATEGY.md)。
 
-1. `Phone Starting → Device Ready → Phone Ready → Device Ready` 三步握手；
-2. 心跳、`UiLayoutState`、`WifiStatus`；
-3. `NavigationSnapshot`（右转 120 m、泉城广场北路、72 km/h）；
-4. 3 个 `RouteGeometry` 分块 + 下一帧快照；
-5. `MapScene`、`MediaState`、`UiLayout`（含 2 s 防抖后的 `UiLayoutState`）；
-6. WiFi 扫描、连接成功、认证失败；
-7. 断言真实 LVGL 状态（模式、转向、道路名、路线点、布局）与帧缓冲变化。
+| 用例 | 覆盖维度 | 场景 |
+| --- | --- | --- |
+| `baseline` | 功能/协议/数据 | 握手、导航、几何、地图、媒体、布局、WiFi 成功/失败 |
+| `session-reconnect` | 异常/恢复 | 断链后用新 session 重连并恢复几何 |
+| `layout-rules` | 协议/边界 | 版本单调、重放 `Duplicate`、非法载荷 `Failed`、防抖 |
+| `geometry-mismatch` | 协议/时序 | 新代次快照清除旧几何 |
+| `geometry-recovery` | 异常/恢复 | 新代次几何恢复路线显示 |
+| `wifi-errors` | 异常/边界 | 扫描、认证失败、超时、成功、断开、忘记 |
+| `state-acquiring` | 功能状态 | 无目的地/无定位 → `ACQUIRING_FIX` |
+| `state-arrived` | 功能状态 | 到达状态与动作 |
+| `state-offline` | 功能状态 | 导航中离线 → `OFFLINE` |
+| `fragmentation` | 数据边界 | 最大 `MapScene` + 8 组件布局的多帧路径 |
 
-退出码 0 表示通过。加 `--frames` 会输出：
+`--case baseline` 等价于原来的 `--selftest`。加 `--frames DIR` 会输出
+`01-offline-<id>.bmp` 与 `02-<id>.bmp`；BMP 可直接用 Windows 照片查看，
+需要 PNG 时用任意转换工具。
 
-- `01-offline.bmp`：未连接状态；
-- `02-navigation.bmp`：收到导航快照后的圆屏画面。
-
-BMP 可直接用 Windows 照片查看；需要 PNG 时用任意转换工具。
+退出码 0 表示该用例通过；失败会打印 `CASE FAIL <id>: <原因>`，
+加 `--verbose` 可看到固件侧日志。
 
 ## 作为虚拟设备运行
 
@@ -136,7 +144,8 @@ App 内仍是真实的 `Esp32BleCentral`（握手机、队列、重连、ACK）�
 | `src/virtual_ble_transport.cpp` | NimBLE 传输层的宿主机替身（握手/ACK/心跳/看门狗） |
 | `src/headless_display.cpp` | 466×466 RGB565 显示与 BMP 导出 |
 | `src/tcp_link.cpp` | 服务端/客户端与链路分帧 |
-| `src/selftest_phone.cpp` | 脚本手机与端到端断言 |
+| `src/phone_client.cpp` | 可复用的脚本手机（握手/快照/几何/布局/WiFi） |
+| `src/selftest_phone.cpp` | 用例矩阵、脚本与 UI 断言 |
 | `src/wifi_provisioning_host.cpp` | 可编排 WiFi 配网假实现 |
 | `host_stubs/` | `board_port`、`esp_timer`、`esp_log`、`esp_err` |
 
@@ -146,8 +155,11 @@ App 内仍是真实的 `Esp32BleCentral`（握手机、队列、重连、ACK）�
   the shared LVGL UI on a headless 466×466 RGB565 display.
 - The phone link is loopback TCP: an 8-byte header followed by one encoded v1 BLE
   frame. The transport reports an ATT MTU of 185 so frames are 182 bytes.
-- `--selftest` drives the handshake, heartbeats, navigation, geometry, map scene,
-  media, layout and WiFi, then asserts the device UI state and a changed frame.
+- `--case <id>` runs one deterministic end-to-end case in its own process;
+  `--list-cases` prints the matrix and `ctest` runs all of them.
+- Cases cover handshake/heartbeats, navigation, geometry generation mismatch and
+  recovery, layout revision rules, WiFi failures, UI states, reconnection and
+  maximum-size fragmentation.
 - Debug Android builds attach through `TcpBleTransport` when `files/ble_sim`
   exists (`adb reverse tcp:9100 tcp:9100`).
 - Not covered: BLE RF/pairing/background liveness, the panel, PSRAM pressure,

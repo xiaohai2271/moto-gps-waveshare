@@ -14,6 +14,7 @@ add_executable(moto_device_sim
     src/device_sim.cpp
     src/headless_display.cpp
     src/link_protocol.cpp
+    src/phone_client.cpp
     src/selftest_phone.cpp
     src/tcp_link.cpp
     src/virtual_ble_transport.cpp
@@ -64,6 +65,23 @@ else()
     )
 endif()
 
-# Ephemeral port so the self-test can run in parallel with anything else (and
+# Ephemeral port so the cases can run in parallel with anything else (and
 # inside CTest) without colliding on 9100.
-add_test(NAME device_sim_selftest COMMAND moto_device_sim --selftest --port 0)
+add_test(NAME device_sim_selftest
+         COMMAND moto_device_sim --selftest --port 0)
+
+set(MOTO_SIM_CASES
+    session-reconnect
+    layout-rules
+    geometry-mismatch
+    geometry-recovery
+    wifi-errors
+    state-acquiring
+    state-arrived
+    state-offline
+    fragmentation
+)
+foreach(case IN LISTS MOTO_SIM_CASES)
+    add_test(NAME "device_sim_${case}"
+             COMMAND moto_device_sim --case "${case}" --port 0)
+endforeach()

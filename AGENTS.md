@@ -41,7 +41,8 @@ Linux / macOS:
 cmake -S . -B build/native -DMOTO_BUILD_TESTS=ON -DMOTO_BUILD_SIM=ON
 cmake --build build/native --parallel 4
 ctest --test-dir build/native --output-on-failure
-./build/native/bin/moto_device_sim --selftest --port 0
+./build/native/bin/moto_device_sim --list-cases
+./build/native/bin/moto_device_sim --case baseline --port 0
 ```
 
 Windows (VS Developer PowerShell; in restricted environments Ninja's
@@ -53,7 +54,8 @@ cmake -S . -B build/native -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release `
 cmake --build build/native
 <VS>\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe `
     --test-dir build/native --output-on-failure
-build\native\bin\moto_device_sim.exe --selftest --port 0
+build\native\bin\moto_device_sim.exe --list-cases
+build\native\bin\moto_device_sim.exe --case baseline --port 0
 ```
 
 If the `third_party/lvgl` directory is empty, initialise the submodule first
@@ -83,12 +85,12 @@ python -m http.server 4173 --directory .
 
 | Touched | Must run |
 | --- | --- |
-| `shared/nav_core`, `shared/nav_app`, `shared/nav_presenter` | `ctest` (includes the simulator self-test) |
-| `shared/nav_ui`, fonts, layout, projection | `nav_ui_render_tests` + `moto_device_sim --selftest --frames build/native/frames`; inspect `01-offline.bmp` / `02-navigation.bmp` |
-| `shared/ble_protocol` | `ble_protocol_tests` + Android `GoldenBytesJvmTest` + simulator self-test |
-| `platforms/esp32/main/phone_nav_bridge.*` | `phone_nav_bridge_tests` + simulator self-test |
-| `platforms/esp32/main/ble_nav_transport_nimble.*` | No host coverage. Build ESP-IDF and mark hardware-unverified. If transport semantics changed, mirror them in `VirtualBleTransport` and extend the self-test. |
-| `platforms/esp32/main/wifi_provisioning.*`, `wifi_health_server.*` | No host coverage for the radio; extend the scripted fake + self-test for protocol/state changes, and mark the RF path unverified. |
+| `shared/nav_core`, `shared/nav_app`, `shared/nav_presenter` | `ctest` (includes all simulator cases) |
+| `shared/nav_ui`, fonts, layout, projection | `ctest` + `moto_device_sim --case baseline --frames build/native/frames` and `--case layout-rules`; inspect `01-offline-baseline.bmp` / `02-baseline.bmp` |
+| `shared/ble_protocol` | `ble_protocol_tests` + Android `GoldenBytesJvmTest` + `ctest` |
+| `platforms/esp32/main/phone_nav_bridge.*` | `phone_nav_bridge_tests` + `ctest` |
+| `platforms/esp32/main/ble_nav_transport_nimble.*` | No host coverage. Build ESP-IDF and mark hardware-unverified. If transport semantics changed, mirror them in `VirtualBleTransport` and add/extend a case. |
+| `platforms/esp32/main/wifi_provisioning.*`, `wifi_health_server.*` | No host coverage for the radio; extend the scripted fake + `wifi-errors` case, and mark the RF path unverified. |
 | Android UI / navigation / layout | `:app:testDebugUnitTest` + `:app:assembleDebug` |
 | Android `TcpBleTransport` / `Esp32BleCentral` | above + host simulator E2E via the `files/ble_sim` marker |
 | `backend/` | `npm --prefix backend test` |
@@ -101,23 +103,27 @@ whole suite; it is only a few seconds.
 
 ## 4. Extending the simulator
 
-- **New/changed application message**: add a scripted step in
-  `platforms/desktop/src/selftest_phone.cpp` and assert the visible result in
-  `check_ui()` via `sim.presenter().ui_state()` or `sim.applied_layout()`.
+- **New/changed application message**: add a case in
+  `platforms/desktop/src/selftest_phone.cpp` using `NavPhoneClient`, and assert
+  the visible result through `sim.presenter().ui_state()` or
+  `sim.applied_layout()`.
+- **New case registration**: append to `kCases` in `selftest_phone.cpp`, add the
+  id to `MOTO_SIM_CASES` in `platforms/desktop/CMakeLists.txt`, and update
+  `platforms/desktop/README.md` + this file.
 - **Handshake / ACK / heartbeat / watchdog semantics**: only then touch
   `VirtualBleTransport`, and keep it aligned with
   `platforms/esp32/main/ble_nav_transport_nimble.cpp`.
 - **New WiFi behaviour**: extend the SSID rules in
   `src/wifi_provisioning_host.cpp` (`fail`, `timeout`, otherwise success) and
-  cover both success and failure in the self-test.
-- **New link failure mode**: add a scripted step that disconnects, delays, or
-  drops frames, then assert recovery or the degraded state.
+  extend the `wifi-errors` case.
+- **New link failure mode**: add a case that disconnects, delays, or drops
+  frames, then assert recovery or the degraded state.
 - **New UI state**: prefer asserting `moto_ui_state_t` fields over pixel hashes;
   only add a golden frame when a visual regression has no state proxy.
 
 Do not make the simulator depend on Android, the network, a real AMap key, or a
-wall-clock-dependent animation. The self-test must stay deterministic enough to
-run in CI.
+wall-clock-dependent animation. Every case must run in its own process and stay
+deterministic enough for CI.
 
 ---
 
@@ -128,15 +134,16 @@ Every task must end with:
 ```text
 Changed: <files / areas>
 Commands:
-  - <exact command>            -> exit 0
-  - moto_device_sim --selftest -> SELFTEST PASS
-Artifacts: build/native/frames/02-navigation.bmp (if UI changed)
+  - ctest --test-dir build/native --output-on-failure -> 19/19 passed
+  - moto_device_sim --case <id> --port 0             -> CASE PASS <id>
+Artifacts: build/native/frames/02-<id>.bmp (if UI changed)
 Not verified on hardware: BLE RF/pairing, CO5300 panel, PSRAM/40 Hz, IMU, power
 ```
 
 Rules of thumb:
 
-- paste the `SELFTEST PASS` line and ctest summary, not a paraphrase;
+- paste the `100% tests passed` summary and the `CASE PASS <id>` line, not a
+  paraphrase;
 - if a test was skipped, state the exact reason (`no emulator`, `submodule not
   initialised`, `no network`);
 - a screenshot is evidence of rendering, not of panel colour or refresh rate.
@@ -148,8 +155,8 @@ Rules of thumb:
 | Symptom | Likely cause / action |
 | --- | --- |
 | `bind(127.0.0.1:9100) failed` | port in use; use `--port 0` or stop the other instance |
-| `SELFTEST FAIL: post: no ACK ...` | rerun with `--verbose`; check session id, heartbeat cadence, frame size |
-| Self-test times out with no frames | ensure `moto_nav_ui_create()` runs after the headless display; check LVGL heap |
+| `CASE FAIL <id>: ...` | run that case alone with `--case <id> --verbose --port 0`; check session id, heartbeat cadence, frame size |
+| Case times out with no frames | ensure `moto_nav_ui_create()` runs after the headless display; check LVGL heap |
 | Android never scans | debug build? marker file present? `adb reverse --list`? logcat tag `MotoGpsSim` |
 | Emulator cannot use `adb reverse` | put `10.0.2.2:9100` in `files/ble_sim` instead |
 | `git status` fails on `third_party/lvgl` | submodule not initialised in this worktree; init it or work in the main checkout |
@@ -160,6 +167,7 @@ Rules of thumb:
 
 ## 7. Pointers
 
+- `docs/TEST_STRATEGY.md` — dimension model, case matrix, closure criteria.
 - `platforms/desktop/README.md` — simulator design, link framing, limits.
 - `docs/TESTING.md` — full local test matrix.
 - `docs/ANDROID_AI_GUIDE.md` — Android contribution rules and hardware claims.
@@ -178,9 +186,10 @@ Goal: <one sentence>.
 
 Before editing, run the baseline for the areas you will touch
 (`ctest --test-dir build/native --output-on-failure`, and the Android/Gradle
-checks from AGENTS.md §3). After editing, run the same checks plus the host
-virtual-device self-test:
-  build/native/bin/moto_device_sim --selftest --port 0
+checks from AGENTS.md §3). After editing, run the same checks plus the matching
+host virtual-device cases:
+  build/native/bin/moto_device_sim --list-cases
+  build/native/bin/moto_device_sim --case <id> --port 0
 If the change touches UI or protocol, also run with
   --frames build/native/frames
 and inspect the generated frames.
@@ -192,6 +201,6 @@ Constraints:
 - Do not commit build output, frames, APKs, or local.properties.
 - If a check cannot run, say exactly why; never fabricate a pass.
 
-Report: changed files, exact commands + exit codes, the SELFTEST PASS line,
-artifact paths, and the list of items still requiring hardware.
+Report: changed files, exact commands + exit codes, the ctest summary and the
+CASE PASS lines, artifact paths, and the list of items still requiring hardware.
 ```
