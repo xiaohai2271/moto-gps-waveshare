@@ -196,8 +196,10 @@ object LayoutDefaults {
         LayoutComponent(LayoutComponentId.SPEED_LIMIT, enabled = true, x = 300, y = 238),
         LayoutComponent(LayoutComponentId.HEADING, enabled = false, x = 24, y = 40),
         LayoutComponent(LayoutComponentId.MANEUVER, enabled = true, x = 29, y = 220),
-        LayoutComponent(LayoutComponentId.REMAINING_DISTANCE, enabled = true, x = 150, y = 390, opacity = 90),
-        LayoutComponent(LayoutComponentId.REMAINING_TIME, enabled = true, x = 250, y = 390, opacity = 90),
+        // M sizes: distance 116 wide (120–236), time 100 wide (270–370);
+        // the old 150/250 pair overlapped by 16 px (device-verified).
+        LayoutComponent(LayoutComponentId.REMAINING_DISTANCE, enabled = true, x = 120, y = 390, opacity = 90),
+        LayoutComponent(LayoutComponentId.REMAINING_TIME, enabled = true, x = 270, y = 390, opacity = 90),
         LayoutComponent(
             LayoutComponentId.PROGRESS_ARC, enabled = true,
             anchor = LayoutArcAnchor.TOP, spanDeg = 120, opacity = 80,

@@ -35,12 +35,18 @@ bool flash_read(StoredLayout* out) {
   nvs_handle_t handle = 0;
   esp_err_t result = nvs_open(kNamespace, NVS_READONLY, &handle);
   if (result != ESP_OK) {
+    ESP_LOGW(kTag, "nvs_open(%s) failed: %s", kNamespace,
+             esp_err_to_name(result));
     return false;
   }
   StoredLayout record{};
   std::size_t length = sizeof(record);
   result = nvs_get_blob(handle, kLayoutKey, &record, &length);
   if (result != ESP_OK || length != sizeof(record)) {
+    ESP_LOGW(kTag, "nvs_get_blob(%s) failed: %s length=%u expected=%u",
+             kLayoutKey, esp_err_to_name(result),
+             static_cast<unsigned>(length),
+             static_cast<unsigned>(sizeof(record)));
     nvs_close(handle);
     return false;
   }
@@ -48,6 +54,8 @@ bool flash_read(StoredLayout* out) {
   result = nvs_get_u16(handle, kRevisionKey, &revision);
   nvs_close(handle);
   if (result != ESP_OK) {
+    ESP_LOGW(kTag, "nvs_get_u16(%s) failed: %s", kRevisionKey,
+             esp_err_to_name(result));
     return false;
   }
   if (record.revision != revision) {

@@ -319,9 +319,9 @@ moto_ui_layout_t default_ui_layout() {
   layout.components[3] = {MOTO_UI_COMPONENT_MANEUVER, 1, MOTO_UI_SIZE_M, 100,
                           29, 220, 0, 0};
   layout.components[4] = {MOTO_UI_COMPONENT_REMAINING_DISTANCE, 1,
-                          MOTO_UI_SIZE_M, 90, 150, 390, 0, 0};
+                          MOTO_UI_SIZE_M, 90, 120, 390, 0, 0};
   layout.components[5] = {MOTO_UI_COMPONENT_REMAINING_TIME, 1, MOTO_UI_SIZE_M,
-                          90, 250, 390, 0, 0};
+                          90, 270, 390, 0, 0};
   layout.components[6] = {MOTO_UI_COMPONENT_PROGRESS_ARC, 1, MOTO_UI_SIZE_M, 80,
                           0, 0, MOTO_UI_ARC_TOP, 120};
   layout.components[7] = {MOTO_UI_COMPONENT_SPEED_ARC, 1, MOTO_UI_SIZE_M, 80,
@@ -605,6 +605,12 @@ void PhoneNavBridge::set_demo_active(bool active) {
 }
 
 void PhoneNavBridge::restore_layout() {
+  // NVS is normally initialized by the BLE transport, which starts after this
+  // call on the boot path. flash_prepare() is an idempotent nvs_flash_init(),
+  // so calling it here makes the persisted layout readable from the very
+  // first boot frame instead of falling back to the default (device-verified
+  // bug: ESP_ERR_NVS_NOT_INITIALIZED at restore time).
+  moto_ui_layout_store::flash_prepare();
   moto_ui_layout_t layout{};
   std::uint16_t revision = 0;
   const bool restored = moto_ui_layout_store::load(&layout, &revision);
