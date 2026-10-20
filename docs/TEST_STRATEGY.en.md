@@ -14,7 +14,7 @@ A feature or fix is done only when:
 
 1. it is mapped onto the six dimensions below;
 2. every new state, error branch and boundary has an executable case;
-3. the local `ctest` suite passes (currently 23 tests, including 14 simulator
+3. the local `ctest` suite passes (currently 25 tests, including 15 simulator
    end-to-end cases);
 4. protocol fields change together with the golden fixture and both endpoints;
 5. the report contains commands, exit codes, `CASE PASS`/`ctest` output,
@@ -55,6 +55,7 @@ build/native/bin/moto_device_sim --case <id> --port 0
 | `state-arrived` | Functional state | arrived + arrive maneuver | UI = `ARRIVED`, maneuver `ARRIVE` |
 | `state-offline` | Functional state | navigating with network offline | UI = `OFFLINE`, `online=0` |
 | `state-rerouting` | Functional state | rerouting | UI = `REROUTING` |
+| `nav-end` | Functional state | navigation ends; the phone sends a terminal idle snapshot | link stays up, destination/route/distance/road name cleared, still online |
 | `map-scene-stale` | Protocol/timing | rev7, then rev6, then rev8 | rev6 = `Duplicate`, rev8 adopted |
 | `watchdog-offline` | Timing/failure | no heartbeats for 4 s | link inactive, UI `OFFLINE`, route cleared |
 | `watchdog-recovery` | Failure/recovery | heartbeats and geometry after expiry | link active, online, route restored |
@@ -83,7 +84,7 @@ When one is missing, add a case rather than relax an assertion.
 | Layer | Content | When |
 | --- | --- | --- |
 | L0 unit | coordinates, NavCore, protocol, Presenter, bridge, layout store | every change (`ctest`) |
-| L1 simulator | the 10 cases above + frames | every change (`ctest`) |
+| L1 simulator | the 15 cases above + frames | every change (`ctest`) |
 | L2 Android | JVM unit tests, `assembleDebug`; emulator + `files/ble_sim` | Android changes |
 | L3 web | WASM + browser scenario injection | UI/interaction changes |
 | L4 hardware | RF, pairing, lock-screen liveness, panel, PSRAM/frame rate, IMU, power | release acceptance |

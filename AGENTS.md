@@ -134,7 +134,7 @@ Every task must end with:
 ```text
 Changed: <files / areas>
 Commands:
-  - ctest --test-dir build/native --output-on-failure -> 23/23 passed
+  - ctest --test-dir build/native --output-on-failure -> 25/25 passed
   - moto_device_sim --case <id> --port 0             -> CASE PASS <id>
 Artifacts: build/native/frames/02-<id>.bmp (if UI changed)
 Not verified on hardware: BLE RF/pairing, CO5300 panel, PSRAM/40 Hz, IMU, power

@@ -56,6 +56,7 @@ ctest --test-dir build/native --output-on-failure
 | `state-arrived` | 功能状态 | 到达状态与动作 |
 | `state-offline` | 功能状态 | 导航中离线 → `OFFLINE` |
 | `state-rerouting` | 功能状态 | 重算中 → `REROUTING` |
+| `nav-end` | 功能状态 | 导航结束后手机发终帧 → 路线/目的地/距离清零，链路保持 |
 | `map-scene-stale` | 协议/时序 | 旧地图窗口 `Duplicate`，新版本被采用 |
 | `watchdog-offline` | 时序/异常 | 停发心跳 3 s → 逻辑链路断开、路线清空 |
 | `watchdog-recovery` | 异常/恢复 | 断链后首帧恢复链路并重发几何 |

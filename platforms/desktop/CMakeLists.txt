@@ -81,6 +81,7 @@ set(MOTO_SIM_CASES
     state-arrived
     state-offline
     state-rerouting
+    nav-end
     watchdog-offline
     watchdog-recovery
     fragmentation

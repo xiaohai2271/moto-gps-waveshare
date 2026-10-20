@@ -11,7 +11,7 @@
 
 1. 能在下面的**六维模型**中找到它影响的面；
 2. 每个新增状态、错误分支和边界至少有一个可执行用例；
-3. 本机 `ctest` 全绿（当前 23 项，含 14 个模拟器端到端用例）；
+3. 本机 `ctest` 全绿（当前 25 项，含 15 个模拟器端到端用例）；
 4. 协议字段变化时，golden fixture 与两端测试同步更新；
 5. 交付说明包含：命令、退出码、`CASE PASS`/`ctest` 原文、截图路径、**未验证项**；
 6. 明确列出仍需硬件的残余验收，不用模拟结果替代。
@@ -49,6 +49,7 @@ build/native/bin/moto_device_sim --case <id> --port 0
 | `state-arrived` | 功能状态 | Arrived + 到达动作 | UI = `ARRIVED`，动作为 `ARRIVE` |
 | `state-offline` | 功能状态 | 导航中网络离线 | UI = `OFFLINE` 且 `online=0` |
 | `state-rerouting` | 功能状态 | 重算中 | UI = `REROUTING` |
+| `nav-end` | 功能状态 | 导航结束后手机发送终帧（Idle + GNSS 陈旧） | 链路保持、目的地/路线点/距离/道路名清零，仍在线 |
 | `map-scene-stale` | 协议/时序 | rev7 后收到 rev6，再收到 rev8 | rev6 = `Duplicate`，rev8 生效 |
 | `watchdog-offline` | 时序/异常 | 停止心跳 4 s | 链路 inactive、UI `OFFLINE`、路线点清零 |
 | `watchdog-recovery` | 异常/恢复 | 断链后恢复心跳并重发快照/几何 | 链路 active、在线、路线恢复 |
@@ -77,7 +78,7 @@ UI 变更应至少人工查看一次最终帧。
 | 层 | 内容 | 何时跑 |
 | --- | --- | --- |
 | L0 单元 | 坐标、NavCore、协议、Presenter、桥接、布局存储 | 每次改动，`ctest` |
-| L1 模拟器 | 上表 10 个用例 + 帧导出 | 每次改动，`ctest` |
+| L1 模拟器 | 上表 15 个用例 + 帧导出 | 每次改动，`ctest` |
 | L2 Android | JVM 单测、`assembleDebug`；模拟器 + `files/ble_sim` 连虚拟设备 | Android 改动 |
 | L3 Web | WASM + 浏览器场景注入 | UI/交互改动 |
 | L4 硬件 | 射频、配对、锁屏保活、面板、PSRAM/帧率、IMU、功耗 | 发布前残余验收 |

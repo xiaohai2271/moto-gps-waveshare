@@ -93,6 +93,7 @@ enum class CaseKind {
   StateArrived,
   StateOffline,
   StateRerouting,
+  NavEnd,
   MapSceneStale,
   WatchdogOffline,
   WatchdogRecovery,
@@ -352,6 +353,32 @@ void script_state_rerouting(NavPhoneClient& phone) {
   sleep_ms(150);
 }
 
+void script_nav_end(NavPhoneClient& phone) {
+  if(!phone.begin()) return;
+  const moto::ble::NavigationSnapshot snapshot = make_snapshot();
+  if(!phone.send_snapshot(snapshot, true)) return;
+  if(!phone.send_geometry_chunks(visible_route_points(),
+                                 snapshot.route_token,
+                                 snapshot.route_generation, 3)) {
+    return;
+  }
+  if(!phone.send_snapshot(snapshot, false)) return;
+  sleep_ms(120);
+
+  // Android stopNavigation() calls NavCore::cancel() and sends that terminal
+  // snapshot explicitly: publish() drops everything while !navigating, so
+  // without it the round display keeps the last route and maneuver until the
+  // BLE link drops. reset_session(true) preserves the network state, keeps the
+  // display page, clears the route/destination and marks the GNSS stale.
+  moto::ble::NavigationSnapshot ended;
+  ended.state = moto::ble::NavigationState::Idle;
+  ended.network = moto::ble::NetworkState::Online;
+  ended.display_page = moto::ble::DisplayPage::Navigation;
+  ended.flags = moto::ble::NavigationGnssStale;
+  if(!phone.send_snapshot(ended, true)) return;
+  sleep_ms(150);
+}
+
 void script_map_scene_stale(NavPhoneClient& phone) {
   if(!phone.begin()) return;
   const moto::ble::NavigationSnapshot snapshot = make_snapshot();
@@ -439,6 +466,7 @@ void run_script(NavPhoneClient& phone, CaseKind kind) {
     case CaseKind::StateArrived: script_state_arrived(phone); return;
     case CaseKind::StateOffline: script_state_offline(phone); return;
     case CaseKind::StateRerouting: script_state_rerouting(phone); return;
+    case CaseKind::NavEnd: script_nav_end(phone); return;
     case CaseKind::MapSceneStale: script_map_scene_stale(phone); return;
     case CaseKind::WatchdogOffline: script_watchdog_offline(phone); return;
     case CaseKind::WatchdogRecovery: script_watchdog_recovery(phone); return;
@@ -606,6 +634,44 @@ bool verify_state_rerouting(DeviceSim& sim, std::string* error) {
                  "UI is not in the rerouting state", error);
 }
 
+bool verify_nav_end(DeviceSim& sim, std::string* error) {
+  if(!require(sim.transport().link_active(),
+              "the link dropped when navigation ended", error)) {
+    return false;
+  }
+  const moto_ui_state_t& state = sim.presenter().ui_state();
+  if(!require(state.mode != MOTO_UI_NAVIGATING &&
+                  state.mode != MOTO_UI_REROUTING,
+              "UI stayed in a navigating mode after navigation ended", error)) {
+    return false;
+  }
+  if(!require(state.has_destination == 0,
+              "destination survived navigation end", error)) {
+    return false;
+  }
+  if(!require(state.route_point_count == 0,
+              "route view survived navigation end", error)) {
+    return false;
+  }
+  if(!require(state.remaining_distance_m == 0,
+              "remaining distance survived navigation end", error)) {
+    return false;
+  }
+  if(!require(state.speed_kph == 0 && state.speed_limit_kph == 0,
+              "speed survived navigation end", error)) {
+    return false;
+  }
+  if(!require(state.road_name == nullptr,
+              "road name survived navigation end", error)) {
+    return false;
+  }
+  if(!require(state.online == 1,
+              "UI marked the phone offline after navigation end", error)) {
+    return false;
+  }
+  return true;
+}
+
 bool verify_map_scene_stale(DeviceSim& sim, std::string* error) {
   const moto_ui_state_t& state = sim.presenter().ui_state();
   return require(state.map_scene_revision == 8,
@@ -697,6 +763,10 @@ constexpr CaseSpec kCases[] = {
     {"state-rerouting",
      "rerouting renders the rerouting state",
      CaseKind::StateRerouting, &verify_state_rerouting},
+    {"nav-end",
+     "a terminal idle snapshot clears route, destination and distances "
+     "while the link stays up",
+     CaseKind::NavEnd, &verify_nav_end},
     {"map-scene-stale",
      "older map scene revisions are rejected and the newest is adopted",
      CaseKind::MapSceneStale, &verify_map_scene_stale},
