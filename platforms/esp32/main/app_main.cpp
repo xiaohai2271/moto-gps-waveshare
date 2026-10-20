@@ -3,10 +3,12 @@
 #include "ble_nav_transport_nimble.h"
 #include "board_port.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "moto_nav_presenter.hpp"
 #include "moto_nav_ui.h"
@@ -209,8 +211,14 @@ extern "C" void app_main(void) {
   // moving both stacks ahead of esp_wifi_init() leaves the driver one 1.6 KiB
   // RX buffer short ("Expected to init 4 rx buffer, actual is 3"), so only the
   // worker that can fail at boot is hoisted.
-  if (xTaskCreate(power_button_task, "moto_power", 3'072, nullptr, 3,
-                  nullptr) != pdPASS) {
+  // The power worker's 3 KiB stack is the only worker that can live outside
+  // internal RAM: it polls one GPIO, takes the LVGL lock for the power-off
+  // frame and calls the AXP2101 driver. Keeping its stack in PSRAM frees
+  // internal RAM for the WiFi RX pools and the QMI8658 worker, which both need
+  // contiguous internal blocks (device-verified ESP_ERR_NO_MEM otherwise).
+  if (xTaskCreateWithCaps(power_button_task, "moto_power", 3'072, nullptr, 3,
+                          nullptr,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     ESP_LOGW(kTag, "PWR long-hold task could not start");
   }
 
