@@ -75,10 +75,14 @@ set(MOTO_SIM_CASES
     layout-rules
     geometry-mismatch
     geometry-recovery
+    map-scene-stale
     wifi-errors
     state-acquiring
     state-arrived
     state-offline
+    state-rerouting
+    watchdog-offline
+    watchdog-recovery
     fragmentation
 )
 foreach(case IN LISTS MOTO_SIM_CASES)

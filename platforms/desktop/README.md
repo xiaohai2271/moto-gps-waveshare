@@ -55,6 +55,10 @@ ctest --test-dir build/native --output-on-failure
 | `state-acquiring` | 功能状态 | 无目的地/无定位 → `ACQUIRING_FIX` |
 | `state-arrived` | 功能状态 | 到达状态与动作 |
 | `state-offline` | 功能状态 | 导航中离线 → `OFFLINE` |
+| `state-rerouting` | 功能状态 | 重算中 → `REROUTING` |
+| `map-scene-stale` | 协议/时序 | 旧地图窗口 `Duplicate`，新版本被采用 |
+| `watchdog-offline` | 时序/异常 | 停发心跳 3 s → 逻辑链路断开、路线清空 |
+| `watchdog-recovery` | 异常/恢复 | 断链后首帧恢复链路并重发几何 |
 | `fragmentation` | 数据边界 | 最大 `MapScene` + 8 组件布局的多帧路径 |
 
 `--case baseline` 等价于原来的 `--selftest`。加 `--frames DIR` 会输出

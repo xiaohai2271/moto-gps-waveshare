@@ -11,7 +11,7 @@
 
 1. 能在下面的**六维模型**中找到它影响的面；
 2. 每个新增状态、错误分支和边界至少有一个可执行用例；
-3. 本机 `ctest` 全绿（当前 19 项，含 10 个模拟器端到端用例）；
+3. 本机 `ctest` 全绿（当前 23 项，含 14 个模拟器端到端用例）；
 4. 协议字段变化时，golden fixture 与两端测试同步更新；
 5. 交付说明包含：命令、退出码、`CASE PASS`/`ctest` 原文、截图路径、**未验证项**；
 6. 明确列出仍需硬件的残余验收，不用模拟结果替代。
@@ -48,6 +48,10 @@ build/native/bin/moto_device_sim --case <id> --port 0
 | `state-acquiring` | 功能状态 | 无目的地、无定位 | UI = `ACQUIRING_FIX` |
 | `state-arrived` | 功能状态 | Arrived + 到达动作 | UI = `ARRIVED`，动作为 `ARRIVE` |
 | `state-offline` | 功能状态 | 导航中网络离线 | UI = `OFFLINE` 且 `online=0` |
+| `state-rerouting` | 功能状态 | 重算中 | UI = `REROUTING` |
+| `map-scene-stale` | 协议/时序 | rev7 后收到 rev6，再收到 rev8 | rev6 = `Duplicate`，rev8 生效 |
+| `watchdog-offline` | 时序/异常 | 停止心跳 4 s | 链路 inactive、UI `OFFLINE`、路线点清零 |
+| `watchdog-recovery` | 异常/恢复 | 断链后恢复心跳并重发快照/几何 | 链路 active、在线、路线恢复 |
 | `fragmentation` | 数据边界/协议 | 24 道路×8 点 + 16 建筑×8 点；8 组件布局 | 最大 `MapScene` 通过，8 组件布局生效 |
 
 辅助证据：`--frames DIR` 会输出 `01-offline-<id>.bmp` 与 `02-<id>.bmp`；

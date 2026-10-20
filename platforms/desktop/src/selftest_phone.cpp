@@ -92,6 +92,10 @@ enum class CaseKind {
   StateAcquiring,
   StateArrived,
   StateOffline,
+  StateRerouting,
+  MapSceneStale,
+  WatchdogOffline,
+  WatchdogRecovery,
   Fragmentation,
 };
 
@@ -340,6 +344,75 @@ void script_state_offline(NavPhoneClient& phone) {
   sleep_ms(150);
 }
 
+void script_state_rerouting(NavPhoneClient& phone) {
+  if(!phone.begin()) return;
+  moto::ble::NavigationSnapshot snapshot = make_snapshot();
+  snapshot.state = moto::ble::NavigationState::Rerouting;
+  if(!phone.send_snapshot(snapshot, true)) return;
+  sleep_ms(150);
+}
+
+void script_map_scene_stale(NavPhoneClient& phone) {
+  if(!phone.begin()) return;
+  const moto::ble::NavigationSnapshot snapshot = make_snapshot();
+  if(!phone.send_snapshot(snapshot, true)) return;
+  if(!phone.send_map_scene(7, 2, 4, 1, 5)) return;
+
+  moto::ble::AckStatus status = moto::ble::AckStatus::Failed;
+  if(!phone.send_map_scene(6, 2, 4, 1, 5, &status)) return;
+  if(status != moto::ble::AckStatus::Duplicate) {
+    phone.fail("older map scene revision was not reported as Duplicate");
+    return;
+  }
+  if(!phone.send_map_scene(8, 2, 4, 1, 5)) return;
+  if(!phone.send_snapshot(snapshot, false)) return;
+  sleep_ms(150);
+}
+
+void script_watchdog_offline(NavPhoneClient& phone) {
+  if(!phone.begin()) return;
+  const moto::ble::NavigationSnapshot snapshot = make_snapshot();
+  if(!phone.send_snapshot(snapshot, true)) return;
+  if(!phone.send_geometry_chunks(visible_route_points(),
+                                 snapshot.route_token,
+                                 snapshot.route_generation, 3)) {
+    return;
+  }
+  if(!phone.send_snapshot(snapshot, false)) return;
+
+  // Stop heartbeats and all other frames: the device watchdog must drop the
+  // logical link after its 3 s timeout while the TCP connection stays open.
+  phone.set_heartbeat_enabled(false);
+  sleep_ms(4'000);
+}
+
+void script_watchdog_recovery(NavPhoneClient& phone) {
+  if(!phone.begin()) return;
+  const moto::ble::NavigationSnapshot snapshot = make_snapshot();
+  if(!phone.send_snapshot(snapshot, true)) return;
+  if(!phone.send_geometry_chunks(visible_route_points(),
+                                 snapshot.route_token,
+                                 snapshot.route_generation, 3)) {
+    return;
+  }
+  if(!phone.send_snapshot(snapshot, false)) return;
+
+  phone.set_heartbeat_enabled(false);
+  sleep_ms(4'000);
+  phone.set_heartbeat_enabled(true);
+
+  // The first valid frame re-arms the link; geometry must be resent because
+  // link loss clears the device-side route view.
+  if(!phone.send_snapshot(snapshot, true)) return;
+  if(!phone.send_geometry_chunks(visible_route_points(),
+                                 snapshot.route_token,
+                                 snapshot.route_generation, 3)) {
+    return;
+  }
+  if(!phone.send_snapshot(snapshot, false)) return;
+  sleep_ms(150);
+}
+
 void script_fragmentation(NavPhoneClient& phone) {
   if(!phone.begin()) return;
   if(!phone.send_max_map_scene(7)) return;
@@ -365,6 +438,10 @@ void run_script(NavPhoneClient& phone, CaseKind kind) {
     case CaseKind::StateAcquiring: script_state_acquiring(phone); return;
     case CaseKind::StateArrived: script_state_arrived(phone); return;
     case CaseKind::StateOffline: script_state_offline(phone); return;
+    case CaseKind::StateRerouting: script_state_rerouting(phone); return;
+    case CaseKind::MapSceneStale: script_map_scene_stale(phone); return;
+    case CaseKind::WatchdogOffline: script_watchdog_offline(phone); return;
+    case CaseKind::WatchdogRecovery: script_watchdog_recovery(phone); return;
     case CaseKind::Fragmentation: script_fragmentation(phone); return;
   }
 }
@@ -523,6 +600,51 @@ bool verify_state_offline(DeviceSim& sim, std::string* error) {
   return true;
 }
 
+bool verify_state_rerouting(DeviceSim& sim, std::string* error) {
+  const moto_ui_state_t& state = sim.presenter().ui_state();
+  return require(state.mode == MOTO_UI_REROUTING,
+                 "UI is not in the rerouting state", error);
+}
+
+bool verify_map_scene_stale(DeviceSim& sim, std::string* error) {
+  const moto_ui_state_t& state = sim.presenter().ui_state();
+  return require(state.map_scene_revision == 8,
+                 "UI did not adopt the newest map scene revision", error);
+}
+
+bool verify_watchdog_offline(DeviceSim& sim, std::string* error) {
+  if(!require(!sim.transport().link_active(),
+              "link watchdog did not drop the logical link", error)) {
+    return false;
+  }
+  const moto_ui_state_t& state = sim.presenter().ui_state();
+  if(!require(state.mode == MOTO_UI_OFFLINE,
+              "UI did not switch to offline after link loss", error)) {
+    return false;
+  }
+  if(!require(state.route_point_count == 0,
+              "route view survived link loss", error)) {
+    return false;
+  }
+  return true;
+}
+
+bool verify_watchdog_recovery(DeviceSim& sim, std::string* error) {
+  if(!require(sim.transport().link_active(),
+              "link did not recover after a valid frame", error)) {
+    return false;
+  }
+  const moto_ui_state_t& state = sim.presenter().ui_state();
+  if(!require(state.online == 1, "UI did not return online", error)) {
+    return false;
+  }
+  if(!require(state.route_point_count > 0,
+              "route view was not restored after watchdog recovery", error)) {
+    return false;
+  }
+  return true;
+}
+
 bool verify_fragmentation(DeviceSim& sim, std::string* error) {
   const moto_ui_state_t& state = sim.presenter().ui_state();
   if(!require(state.map_scene_revision == 7,
@@ -572,6 +694,18 @@ constexpr CaseSpec kCases[] = {
     {"state-offline",
      "offline network keeps navigation but marks the UI offline",
      CaseKind::StateOffline, &verify_state_offline},
+    {"state-rerouting",
+     "rerouting renders the rerouting state",
+     CaseKind::StateRerouting, &verify_state_rerouting},
+    {"map-scene-stale",
+     "older map scene revisions are rejected and the newest is adopted",
+     CaseKind::MapSceneStale, &verify_map_scene_stale},
+    {"watchdog-offline",
+     "missing phone frames drop the logical link and clear the route",
+     CaseKind::WatchdogOffline, &verify_watchdog_offline},
+    {"watchdog-recovery",
+     "a valid frame after watchdog expiry restores the link and route",
+     CaseKind::WatchdogRecovery, &verify_watchdog_recovery},
     {"fragmentation",
      "maximum MapScene and eight-component layout exercise multi-frame paths",
      CaseKind::Fragmentation, &verify_fragmentation},

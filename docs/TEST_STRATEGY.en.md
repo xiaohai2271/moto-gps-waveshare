@@ -14,7 +14,7 @@ A feature or fix is done only when:
 
 1. it is mapped onto the six dimensions below;
 2. every new state, error branch and boundary has an executable case;
-3. the local `ctest` suite passes (currently 19 tests, including 10 simulator
+3. the local `ctest` suite passes (currently 23 tests, including 14 simulator
    end-to-end cases);
 4. protocol fields change together with the golden fixture and both endpoints;
 5. the report contains commands, exit codes, `CASE PASS`/`ctest` output,
@@ -54,6 +54,10 @@ build/native/bin/moto_device_sim --case <id> --port 0
 | `state-acquiring` | Functional state | no destination/fix | UI = `ACQUIRING_FIX` |
 | `state-arrived` | Functional state | arrived + arrive maneuver | UI = `ARRIVED`, maneuver `ARRIVE` |
 | `state-offline` | Functional state | navigating with network offline | UI = `OFFLINE`, `online=0` |
+| `state-rerouting` | Functional state | rerouting | UI = `REROUTING` |
+| `map-scene-stale` | Protocol/timing | rev7, then rev6, then rev8 | rev6 = `Duplicate`, rev8 adopted |
+| `watchdog-offline` | Timing/failure | no heartbeats for 4 s | link inactive, UI `OFFLINE`, route cleared |
+| `watchdog-recovery` | Failure/recovery | heartbeats and geometry after expiry | link active, online, route restored |
 | `fragmentation` | Data boundary/protocol | 24 roads × 8 points + 16 buildings × 8 points; 8-component layout | maximum `MapScene` accepted, layout applied |
 
 `--frames DIR` writes `01-offline-<id>.bmp` and `02-<id>.bmp`; inspect the final

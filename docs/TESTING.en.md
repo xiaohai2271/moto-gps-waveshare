@@ -32,11 +32,12 @@ LVGL UI and a loopback BLE link.
 ./build/native/bin/moto_device_sim --case layout-rules --port 0
 ```
 
-`ctest` runs the whole matrix (currently 10 simulator cases + 9 unit tests). The cases
+`ctest` runs the whole matrix (currently 14 simulator cases + 9 unit tests). The cases
 cover normal navigation, reconnection, layout revision rules, geometry generation
-mismatch/recovery, WiFi failure paths, acquiring/arrived/offline states and maximum
-fragmentation. See [`TEST_STRATEGY.md`](TEST_STRATEGY.md) for the dimension model and
-closure criteria, and `platforms/desktop/README.md` for details.
+mismatch/recovery, map scene rollback, heartbeat watchdog loss/recovery, WiFi failure
+paths, acquiring/rerouting/arrived/offline states and maximum fragmentation.
+See [`TEST_STRATEGY.md`](TEST_STRATEGY.md) for the dimension model and closure
+criteria, and `platforms/desktop/README.md` for details.
 
 A debug Android build can attach to the same process (`adb reverse tcp:9100` plus the
 `files/ble_sim` marker) without an ESP32. It does not verify BLE RF/pairing/background

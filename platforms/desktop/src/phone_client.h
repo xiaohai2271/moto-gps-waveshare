@@ -46,9 +46,12 @@ class NavPhoneClient {
                           int timeout_ms);
   bool send_map_scene(std::uint32_t revision, int roads,
                       int points_per_road, int buildings,
-                      int points_per_building);
+                      int points_per_building,
+                      moto::ble::AckStatus* status = nullptr);
   bool send_max_map_scene(std::uint32_t revision);
   bool send_media();
+  // Lets the liveness case stop heartbeats without closing the link.
+  void set_heartbeat_enabled(bool enabled) { heartbeat_enabled_ = enabled; }
   bool send_wifi_config(const std::string& ssid, std::uint8_t action, bool ack);
   bool wait_wifi_state(std::uint8_t state, std::uint8_t* error,
                        int timeout_ms);
@@ -78,6 +81,7 @@ class NavPhoneClient {
   std::uint64_t last_heartbeat_ms_ = 0;
   std::uint16_t last_sequence_ = 0;
   bool session_established_ = false;
+  bool heartbeat_enabled_ = true;
   std::vector<moto::ble::Message> inbox_;
   std::string step_;
   std::string error_;

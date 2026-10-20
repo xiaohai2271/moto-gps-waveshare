@@ -29,10 +29,10 @@ ctest --test-dir build/native --output-on-failure
 ./build/native/bin/moto_device_sim --case layout-rules --port 0
 ```
 
-`ctest` 会自动跑全部用例（当前 10 个模拟器用例 + 9 个单元测试）。
-用例覆盖：正常导航、断线重连、布局版本规则、几何代次不匹配/恢复、WiFi 失败矩阵、
-获取/到达/离线状态、最大分片。策略与闭环判据见
-[`TEST_STRATEGY.md`](TEST_STRATEGY.md)，细节见 `platforms/desktop/README.md`。
+`ctest` 会自动跑全部用例（当前 14 个模拟器用例 + 9 个单元测试）。
+用例覆盖：正常导航、断线重连、布局版本规则、几何代次不匹配/恢复、地图版本回退、
+心跳超时断链/恢复、WiFi 失败矩阵、获取/重算/到达/离线状态、最大分片。
+策略与闭环判据见 [`TEST_STRATEGY.md`](TEST_STRATEGY.md)，细节见 `platforms/desktop/README.md`。
 
 Android debug 包可连同一个进程（`adb reverse tcp:9100` + `files/ble_sim` 开关），无需 ESP32。
 它不验证 BLE 射频/配对/后台保活、CO5300 面板、PSRAM 压力、QMI8658、功耗和实车路线。

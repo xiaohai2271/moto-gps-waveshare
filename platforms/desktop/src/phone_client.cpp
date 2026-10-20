@@ -193,7 +193,7 @@ bool NavPhoneClient::send_status(moto::ble::ConnectionState state) {
 }
 
 void NavPhoneClient::maybe_heartbeat() {
-  if(!session_established_) {
+  if(!session_established_ || !heartbeat_enabled_) {
     return;
   }
   const std::uint64_t now = now_ms();
@@ -472,7 +472,8 @@ bool NavPhoneClient::await_layout_state(
 
 bool NavPhoneClient::send_map_scene(std::uint32_t revision, int roads,
                                     int points_per_road, int buildings,
-                                    int points_per_building) {
+                                    int points_per_building,
+                                    moto::ble::AckStatus* status) {
   moto::ble::MapScene scene;
   scene.coordinate_system = moto::ble::CoordinateSystem::Gcj02;
   scene.scene_revision = revision;
@@ -507,8 +508,17 @@ bool NavPhoneClient::send_map_scene(std::uint32_t revision, int roads,
   if(!send_message(moto::ble::Message{scene}, moto::ble::AckRequested)) {
     return false;
   }
-  if(!wait_ack(last_sequence_, 2'000)) {
+  moto::ble::AckStatus observed = moto::ble::AckStatus::Failed;
+  if(!wait_ack_status(last_sequence_, &observed, 2'000)) {
     return fail("no ACK for MapScene");
+  }
+  if(status != nullptr) {
+    *status = observed;
+    return true;
+  }
+  if(observed != moto::ble::AckStatus::Ok) {
+    return fail("MapScene ACK status " +
+                std::to_string(static_cast<int>(observed)));
   }
   return true;
 }
