@@ -1903,9 +1903,9 @@ void update_navigation(const moto_ui_state_t *state) {
                               heading != nullptr && heading->enabled, true);
         set_component_visible(ui.nav_speed_arc_object,
                               speed_arc != nullptr && speed_arc->enabled, true);
-        // The acceleration readout only exists when the speed arc is on.
-        set_component_visible(ui.nav_accel,
-                              speed_arc != nullptr && speed_arc->enabled, true);
+        // The acceleration readout is intentionally not shown: at a constant
+        // speed it rendered as an unexplained "+0.0" in the middle of the map
+        // (device-reported). The arc itself still shows speed.
 
         // Speed limit: hidden when the provider reports zero.
         if(state->speed_limit_kph > 0) {
@@ -1923,7 +1923,6 @@ void update_navigation(const moto_ui_state_t *state) {
         if(speed_arc != nullptr && speed_arc->enabled) {
             lv_arc_set_value(ui.nav_speed_arc_object,
                              std::min<int>(160, static_cast<int>(state->speed_kph)));
-            update_accel_readout(state->speed_kph);
         }
     }
 
