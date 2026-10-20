@@ -2919,6 +2919,15 @@ void apply_layout_internal(const moto_ui_layout_t *incoming) {
                 if(ui.nav_maneuver != nullptr) {
                     lv_obj_invalidate(ui.nav_maneuver);
                 }
+                // The distance/unit are text children of the maneuver box.
+                if(ui.nav_distance != nullptr) {
+                    lv_obj_set_style_text_opa(
+                        ui.nav_distance, text_opacity_opa(c.text_opacity), 0);
+                }
+                if(ui.nav_unit != nullptr) {
+                    lv_obj_set_style_text_opa(
+                        ui.nav_unit, text_opacity_opa(c.text_opacity), 0);
+                }
                 break;
             }
             case MOTO_UI_COMPONENT_REMAINING_DISTANCE:
