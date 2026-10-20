@@ -185,6 +185,13 @@ class PhoneNavBridge {
   bool wifi_started_ = false;
   moto::wifi::WifiProvisioning wifi_;
   moto_ui_layout_t render_layout_{};
+  // Revision carried by render_layout_ and the last revision the renderer
+  // actually applied. Re-applying the full layout on every 5 Hz navigation
+  // frame cost ~15 ms of LVGL work per frame and starved the BLE host; the
+  // renderer now applies it only when a push really changed it.
+  std::uint16_t render_layout_revision_ = 0;
+  std::uint16_t rendered_layout_revision_ = 0;
+  bool layout_rendered_ = false;
 #ifndef ESP_PLATFORM
   void (*before_layout_persist_hook_)(void) = nullptr;
 #endif

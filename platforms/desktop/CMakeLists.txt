@@ -73,6 +73,7 @@ add_test(NAME device_sim_selftest
 set(MOTO_SIM_CASES
     session-reconnect
     layout-rules
+    layout-phone
     geometry-mismatch
     geometry-recovery
     map-scene-stale

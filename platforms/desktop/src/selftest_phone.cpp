@@ -70,8 +70,73 @@ moto::ble::NavigationSnapshot make_snapshot() {
   return snapshot;
 }
 
-std::vector<moto::ble::GeoPointE6> visible_route_points() {
-  const auto& route = moto::demo::jinan_big_data::kRoute;
+// Mirrors the layout the Android editor pushes on the reference phone: free
+// positions in the 466 px canvas and the §4.3 size tiers. The default synthetic
+// layout packs every component into one row, which hides coordinate mistakes.
+moto::ble::UiLayout make_phone_layout(std::uint16_t revision) {
+  moto::ble::UiLayout layout;
+  layout.layout_revision = revision;
+  // heading_up: bit0 north_up is intentionally clear.
+  layout.flags = moto::ble::UiLayoutMusicPageEnabled |
+                 moto::ble::UiLayoutMapVisible;
+  layout.theme = static_cast<std::uint8_t>(moto::ble::UiThemeId::HighContrast);
+  layout.map_height_px = 274;
+  layout.map_opacity = 100;
+  layout.route_r = 0xFF;
+  layout.route_g = 0xD6;
+  layout.route_b = 0x0A;
+  layout.route_width_px = 9;
+  layout.route_opacity = 100;
+  layout.street_r = 0xFF;
+  layout.street_g = 0xFF;
+  layout.street_b = 0xFF;
+  layout.street_width_px = 4;
+  layout.street_opacity = 70;
+  layout.building_opacity = 10;
+  layout.layer_mask = 0x07;
+  layout.zoom_percent = 136;
+
+  auto add = [&layout](moto::ble::UiComponentId id,
+                       moto::ble::UiComponentSize size, std::uint8_t opacity,
+                       std::int16_t x, std::int16_t y,
+                       moto::ble::UiArcAnchor anchor, std::uint8_t span) {
+    moto::ble::UiLayoutComponent component;
+    component.id = static_cast<std::uint8_t>(id);
+    component.flags = moto::ble::UiComponentEnabled;
+    component.size = static_cast<std::uint8_t>(size);
+    component.opacity = opacity;
+    component.x = x;
+    component.y = y;
+    component.anchor = static_cast<std::uint8_t>(anchor);
+    component.span_deg = span;
+    layout.components.push_back(component);
+  };
+
+  add(moto::ble::UiComponentId::Speed, moto::ble::UiComponentSize::Large, 100,
+      160, 312, moto::ble::UiArcAnchor::Top, 0);
+  add(moto::ble::UiComponentId::SpeedLimit,
+      moto::ble::UiComponentSize::Medium, 100, 344, 296,
+      moto::ble::UiArcAnchor::Top, 0);
+  add(moto::ble::UiComponentId::Heading, moto::ble::UiComponentSize::Small,
+      100, 200, 32, moto::ble::UiArcAnchor::Top, 0);
+  add(moto::ble::UiComponentId::Maneuver, moto::ble::UiComponentSize::Medium,
+      100, 29, 220, moto::ble::UiArcAnchor::Top, 0);
+  add(moto::ble::UiComponentId::RemainingDistance,
+      moto::ble::UiComponentSize::Medium, 90, 120, 390,
+      moto::ble::UiArcAnchor::Top, 0);
+  add(moto::ble::UiComponentId::RemainingTime,
+      moto::ble::UiComponentSize::Medium, 90, 270, 390,
+      moto::ble::UiArcAnchor::Top, 0);
+  add(moto::ble::UiComponentId::ProgressArc,
+      moto::ble::UiComponentSize::Medium, 80, 0, 0,
+      moto::ble::UiArcAnchor::Top, 90);
+  add(moto::ble::UiComponentId::SpeedArc,
+      moto::ble::UiComponentSize::Medium, 80, 0, 0,
+      moto::ble::UiArcAnchor::Bottom, 90);
+  return layout;
+}
+
+std::vector<moto::ble::GeoPointE6> visible_route_points() {  const auto& route = moto::demo::jinan_big_data::kRoute;
   std::vector<moto::ble::GeoPointE6> points;
   points.reserve(18);
   // The rider is near the bottom of the map viewport, so walk the fixture
@@ -86,6 +151,7 @@ enum class CaseKind {
   Baseline,
   SessionReconnect,
   LayoutRules,
+  LayoutPhone,
   GeometryMismatch,
   GeometryRecovery,
   WifiErrors,
@@ -379,8 +445,29 @@ void script_nav_end(NavPhoneClient& phone) {
   sleep_ms(150);
 }
 
-void script_map_scene_stale(NavPhoneClient& phone) {
+void script_layout_phone(NavPhoneClient& phone) {
   if(!phone.begin()) return;
+  moto::ble::AckStatus status = moto::ble::AckStatus::Failed;
+  if(!phone.send_layout(make_phone_layout(9), &status)) return;
+  if(status != moto::ble::AckStatus::Ok) {
+    phone.fail("the reference phone layout was rejected");
+    return;
+  }
+  const moto::ble::NavigationSnapshot snapshot = make_snapshot();
+  if(!phone.send_snapshot(snapshot, true)) return;
+  if(!phone.send_geometry_chunks(visible_route_points(),
+                                 snapshot.route_token,
+                                 snapshot.route_generation, 3)) {
+    return;
+  }
+  if(!phone.send_snapshot(snapshot, false)) return;
+  // The bridge persists and applies a pushed layout after the debounce window
+  // and then emits UiLayoutState; wait for it instead of guessing a sleep.
+  if(!phone.await_layout_state(9, snapshot, 4'000)) return;
+  sleep_ms(200);
+}
+
+void script_map_scene_stale(NavPhoneClient& phone) {  if(!phone.begin()) return;
   const moto::ble::NavigationSnapshot snapshot = make_snapshot();
   if(!phone.send_snapshot(snapshot, true)) return;
   if(!phone.send_map_scene(7, 2, 4, 1, 5)) return;
@@ -459,6 +546,7 @@ void run_script(NavPhoneClient& phone, CaseKind kind) {
     case CaseKind::Baseline: script_baseline(phone); return;
     case CaseKind::SessionReconnect: script_session_reconnect(phone); return;
     case CaseKind::LayoutRules: script_layout_rules(phone); return;
+    case CaseKind::LayoutPhone: script_layout_phone(phone); return;
     case CaseKind::GeometryMismatch: script_geometry_mismatch(phone); return;
     case CaseKind::GeometryRecovery: script_geometry_recovery(phone); return;
     case CaseKind::WifiErrors: script_wifi_errors(phone); return;
@@ -547,8 +635,52 @@ bool verify_session_reconnect(DeviceSim& sim, std::string* error) {
   return true;
 }
 
-bool verify_layout_rules(DeviceSim& sim, std::string* error) {
+bool verify_layout_phone(DeviceSim& sim, std::string* error) {
   const moto_ui_layout_t& layout = sim.applied_layout();
+  if(!require(layout.component_count == 8,
+              "the reference phone layout did not apply all components",
+              error)) {
+    return false;
+  }
+  if(!require(layout.map_height_px == 274,
+              "the reference layout map height was not adopted", error)) {
+    return false;
+  }
+  const auto find = [&layout](std::uint8_t id)
+      -> const moto_ui_component_layout_t* {
+    for(std::uint8_t i = 0; i < layout.component_count; ++i) {
+      if(layout.components[i].id == id) return &layout.components[i];
+    }
+    return nullptr;
+  };
+  const auto* speed = find(MOTO_UI_COMPONENT_SPEED);
+  if(!require(speed != nullptr && speed->x == 160 && speed->y == 312,
+              "speed component coordinates were rescaled out of 466-space",
+              error)) {
+    return false;
+  }
+  const auto* remaining = find(MOTO_UI_COMPONENT_REMAINING_DISTANCE);
+  if(!require(remaining != nullptr && remaining->x == 120 &&
+                  remaining->y == 390,
+              "remaining-distance component fell outside the 466 px canvas",
+              error)) {
+    return false;
+  }
+  const auto* time = find(MOTO_UI_COMPONENT_REMAINING_TIME);
+  if(!require(time != nullptr && time->x == 270 && time->y == 390,
+              "remaining-time component fell outside the 466 px canvas",
+              error)) {
+    return false;
+  }
+  const moto_ui_state_t& state = sim.presenter().ui_state();
+  if(!require(state.route_point_count > 0,
+              "route view missing after the reference layout", error)) {
+    return false;
+  }
+  return true;
+}
+
+bool verify_layout_rules(DeviceSim& sim, std::string* error) {  const moto_ui_layout_t& layout = sim.applied_layout();
   if(!require(layout.component_count == 2,
               "UI did not apply the revision-4 component count", error)) {
     return false;
@@ -742,6 +874,10 @@ constexpr CaseSpec kCases[] = {
     {"layout-rules",
      "monotonic revisions, replay, invalid payload rejection and debounce",
      CaseKind::LayoutRules, &verify_layout_rules},
+    {"layout-phone",
+     "the Android editor's 466-space positions survive the wire and render "
+     "inside the canvas",
+     CaseKind::LayoutPhone, &verify_layout_phone},
     {"geometry-mismatch",
      "a newer snapshot generation hides stale route geometry",
      CaseKind::GeometryMismatch, &verify_geometry_mismatch},

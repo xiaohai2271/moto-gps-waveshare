@@ -29,7 +29,7 @@ ctest --test-dir build/native --output-on-failure
 ./build/native/bin/moto_device_sim --case layout-rules --port 0
 ```
 
-`ctest` 会自动跑全部用例（当前 15 个模拟器用例 + 10 个单元测试）。
+`ctest` 会自动跑全部用例（当前 16 个模拟器用例 + 10 个单元测试）。
 用例覆盖：正常导航、断线重连、布局版本规则、几何代次不匹配/恢复、地图版本回退、
 心跳超时断链/恢复、WiFi 失败矩阵、获取/重算/到达/离线状态、最大分片。
 策略与闭环判据见 [`TEST_STRATEGY.md`](TEST_STRATEGY.md)，细节见 `platforms/desktop/README.md`。

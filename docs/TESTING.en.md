@@ -32,7 +32,7 @@ LVGL UI and a loopback BLE link.
 ./build/native/bin/moto_device_sim --case layout-rules --port 0
 ```
 
-`ctest` runs the whole matrix (currently 15 simulator cases + 10 unit tests). The cases
+`ctest` runs the whole matrix (currently 16 simulator cases + 10 unit tests). The cases
 cover normal navigation, reconnection, layout revision rules, geometry generation
 mismatch/recovery, map scene rollback, heartbeat watchdog loss/recovery, WiFi failure
 paths, acquiring/rerouting/arrived/offline states and maximum fragmentation.

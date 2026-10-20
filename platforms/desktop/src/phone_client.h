@@ -41,6 +41,8 @@ class NavPhoneClient {
   bool send_layout_variant(std::uint16_t revision, std::uint16_t map_height,
                            std::uint8_t components,
                            moto::ble::AckStatus* status);
+  bool send_layout(const moto::ble::UiLayout& layout,
+                   moto::ble::AckStatus* status);
   bool await_layout_state(std::uint16_t revision,
                           const moto::ble::NavigationSnapshot& snapshot,
                           int timeout_ms);

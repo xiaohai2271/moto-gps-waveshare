@@ -49,6 +49,7 @@ ctest --test-dir build/native --output-on-failure
 | `baseline` | 功能/协议/数据 | 握手、导航、几何、地图、媒体、布局、WiFi 成功/失败 |
 | `session-reconnect` | 异常/恢复 | 断链后用新 session 重连并恢复几何 |
 | `layout-rules` | 协议/边界 | 版本单调、重放 `Duplicate`、非法载荷 `Failed`、防抖 |
+| `layout-phone` | 数据/平台 | 按 Android 编辑器的 466 坐标下发 8 个组件，验证不被二次缩放 |
 | `geometry-mismatch` | 协议/时序 | 新代次快照清除旧几何 |
 | `geometry-recovery` | 异常/恢复 | 新代次几何恢复路线显示 |
 | `wifi-errors` | 异常/边界 | 扫描、认证失败、超时、成功、断开、忘记 |

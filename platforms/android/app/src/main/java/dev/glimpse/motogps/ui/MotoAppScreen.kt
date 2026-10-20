@@ -2,6 +2,7 @@ package dev.glimpse.motogps.ui
 
 import android.content.Intent
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -96,6 +97,9 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
     var showWifi by remember { mutableStateOf(false) }
 
     if (showLayoutEditor) {
+        // System back must close the editor, not leave the app. The header
+        // button had the same behaviour; the back gesture did not.
+        BackHandler { showLayoutEditor = false }
         LayoutEditorScreen(
             editor = vm.layoutEditor,
             onPushLayout = { vm.scheduleLayoutPush() },
@@ -141,6 +145,27 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
     if (showWifi) {
         val wifiVm = remember(vm) { WifiProvisioningViewModel(vm.bleCentral()) }
         WifiSettingsSheet(vm = wifiVm, onDismiss = { showWifi = false })
+    }
+
+    // Back stack: sheets first, then the route preview. Without this, back on
+    // the route-options screen or an expanded sheet left the app entirely
+    // (device-reported). The handler is composed last so it wins over the
+    // sheets' internal handlers.
+    BackHandler(
+        enabled = showWifi || showPermissions || showMapDownloads ||
+            showPrivacy || showGateway || showDevice,
+    ) {
+        when {
+            showWifi -> showWifi = false
+            showPermissions -> showPermissions = false
+            showMapDownloads -> showMapDownloads = false
+            showPrivacy -> showPrivacy = false
+            showGateway -> showGateway = false
+            showDevice -> showDevice = false
+        }
+    }
+    BackHandler(enabled = screen == MotoScreen.RoutePreview) {
+        vm.clearDestination()
     }
 }
 

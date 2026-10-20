@@ -46,15 +46,24 @@ object LocalOnlyHotspotHelper {
                 object : WifiManager.LocalOnlyHotspotCallback() {
                     override fun onStarted(res: WifiManager.LocalOnlyHotspotReservation) {
                         reservation = res
-                        // Android does not expose the generated SSID/passphrase to
-                        // third-party apps. Surface this so the UI can fall back to
-                        // manual mode (docs §7.6).
+                        // Android 8+ exposes the generated credentials through
+                        // wifiConfiguration; the previous "not exposed" fallback
+                        // made the auto-hotspot button always fail even though
+                        // the reservation had started.
+                        @Suppress("DEPRECATION")
+                        val config = res.wifiConfiguration
+                        val ssid = config?.SSID?.trim('"').orEmpty()
+                        val password = config?.preSharedKey?.trim('"').orEmpty()
                         mainHandler.post {
-                            onResult(
-                                AutoHotspotResult.Failed(
-                                    "系统未向 App 暴露热点 SSID/密码，请使用手动模式",
-                                ),
-                            )
+                            if (ssid.isNotEmpty() && password.isNotEmpty()) {
+                                onResult(AutoHotspotResult.Started(ssid, password))
+                            } else {
+                                onResult(
+                                    AutoHotspotResult.Failed(
+                                        "系统未提供热点 SSID/密码，请改用手动模式",
+                                    ),
+                                )
+                            }
                         }
                     }
 

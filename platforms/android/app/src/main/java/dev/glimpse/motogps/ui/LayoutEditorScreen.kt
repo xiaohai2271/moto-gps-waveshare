@@ -111,10 +111,10 @@ fun LayoutEditorScreen(
             showDemoData = showDemoData,
             onComponentTap = { selectedComponent = it },
             onDragStart = { selectedComponent = it },
-            onDragEnd = { id ->
-                editor.settleDraggedComponent(id, lastDragCenter.first, lastDragCenter.second)
+            onDragEnd = { id, x, y ->
+                editor.settleDraggedComponent(id, x, y)
             },
-            onDrag = { _, x, y -> lastDragCenter = x to y },
+            onDrag = { _, _, _ -> },
         )
 
         Spacer(Modifier.height(4.dp))
@@ -161,9 +161,6 @@ fun LayoutEditorScreen(
         )
     }
 }
-
-/** 最近一次拖拽中心点（画布坐标），松手时用于吸附计算。 */
-private var lastDragCenter = 0f to 0f
 
 private fun syncLabel(state: LayoutEditorState.SyncState): String = when (state) {
     LayoutEditorState.SyncState.NOT_CONNECTED -> "未连接 · 待同步"
@@ -304,7 +301,11 @@ private fun BasemapTab(editor: LayoutEditorState) {
     val basemap = state.layout.basemap
 
     EditorSection(header = "主题预设", footer = "切换主题会改写下方路线/街道样式；底图为矢量主题，本期不提供影像来源选项。") {
-        SegmentedRow("主题", BasemapTheme.entries.map { it.label }) { index ->
+        SegmentedRow(
+            "主题",
+            BasemapTheme.entries.map { it.label },
+            selectedIndex = BasemapTheme.entries.indexOf(basemap.theme),
+        ) { index ->
             val theme = BasemapTheme.entries[index]
             editor.updateBasemap { BasemapThemes.apply(it, theme) }
         }
@@ -364,13 +365,18 @@ private fun GlobalTab(editor: LayoutEditorState) {
     val state by editor.state.collectAsState()
     val layout = state.layout
 
+    val orientationIndex =
+        if (layout.orientation == LayoutOrientation.NORTH_UP) 0 else 1
     EditorSection(
         header = "方向模式",
-        footer = "北向上：地图固定北向，车标随航向旋转。航向由手机提供，圆屏不做罗盘解算。",
+        footer = "当前生效：${if (orientationIndex == 0) "北向上" else "设备向上"}。" +
+            "北向上：地图固定北向，车标随航向旋转；设备向上：地图随手机航向旋转。" +
+            "航向由手机提供，圆屏不做罗盘解算。",
     ) {
         SegmentedRow(
             "方向",
             listOf("北向上", "设备向上"),
+            selectedIndex = orientationIndex,
         ) { index ->
             editor.updateOrientation(
                 if (index == 0) LayoutOrientation.NORTH_UP else LayoutOrientation.HEADING_UP,
@@ -468,7 +474,12 @@ private fun ToggleRow(label: String, value: Boolean, onChange: (Boolean) -> Unit
 }
 
 @Composable
-private fun SegmentedRow(label: String, options: List<String>, onSelect: (Int) -> Unit) {
+private fun SegmentedRow(
+    label: String,
+    options: List<String>,
+    selectedIndex: Int? = null,
+    onSelect: (Int) -> Unit,
+) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
         Text(label, fontSize = 13.sp, color = IosSecondary)
         Spacer(Modifier.height(6.dp))
@@ -479,15 +490,16 @@ private fun SegmentedRow(label: String, options: List<String>, onSelect: (Int) -
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             options.forEachIndexed { index, option ->
+                val isSelected = selectedIndex == index
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = IosBlue.copy(alpha = 0.1f),
+                    color = if (isSelected) IosBlue else IosBlue.copy(alpha = 0.1f),
                     modifier = Modifier.clickable { onSelect(index) },
                 ) {
                     Text(
                         option,
                         fontSize = 14.sp,
-                        color = IosBlue,
+                        color = if (isSelected) Color.White else IosBlue,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                     )
                 }

@@ -25,6 +25,11 @@ open class MotoGpsApplication : Application() {
         CrashLogger.install(this)
         bleCentral = Esp32BleCentral(this, transportFactory = createTransportFactory())
         navigationSession = NavigationSession(this, bleCentral)
+        // Return to the round display that was connected before the process was
+        // killed. On the very first launch there is no saved address and this
+        // is a no-op; permission/transport failures surface through the BLE
+        // state so the UI can explain why the link did not come back.
+        bleCentral.autoConnectLast()
     }
 
     protected open fun createTransportFactory(): ((BleTransport.Listener) -> BleTransport)? =

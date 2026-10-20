@@ -14,7 +14,7 @@ A feature or fix is done only when:
 
 1. it is mapped onto the six dimensions below;
 2. every new state, error branch and boundary has an executable case;
-3. the local `ctest` suite passes (currently 25 tests, including 15 simulator
+3. the local `ctest` suite passes (currently 26 tests, including 16 simulator
    end-to-end cases);
 4. protocol fields change together with the golden fixture and both endpoints;
 5. the report contains commands, exit codes, `CASE PASS`/`ctest` output,
@@ -48,6 +48,7 @@ build/native/bin/moto_device_sim --case <id> --port 0
 | `baseline` | Function/protocol/data | handshake → snapshot → 3 geometry chunks → map → media → layout → WiFi success/failure | mode, maneuver, distance, road name, route points, layout, online |
 | `session-reconnect` | Failure/recovery | 350 ms link loss, new session, new geometry | online recovery, generation 5, route restored, new road |
 | `layout-rules` | Protocol/boundary | rev3 apply; rev2/rev3 replay; corrupted height; rev4 valid | `Duplicate`, `Failed`, rev4 applied (260 px / 2 components) |
+| `layout-phone` | Data/platform | the Android editor's 466-space layout with all 8 components (speed 160,312; remaining 120/270,390) | coordinates survive without rescaling, all components apply, route stays visible |
 | `geometry-mismatch` | Protocol/timing | generation 3 geometry, then generation 4 snapshot | generation 4 adopted, route points cleared |
 | `geometry-recovery` | Failure/recovery | generation 4 geometry resent | route view restored for generation 4 |
 | `wifi-errors` | Failure/boundary | scan, auth failure, timeout, success, disconnect, forget | state/error per step; final `NoCredentials` |

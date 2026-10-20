@@ -428,6 +428,11 @@ bool NavPhoneClient::send_layout_variant(std::uint16_t revision,
                                          moto::ble::AckStatus* status) {
   const moto::ble::UiLayout layout =
       make_test_layout(revision, map_height, components);
+  return send_layout(layout, status);
+}
+
+bool NavPhoneClient::send_layout(const moto::ble::UiLayout& layout,
+                                 moto::ble::AckStatus* status) {
   if(!send_message(moto::ble::Message{layout}, moto::ble::AckRequested)) {
     return false;
   }

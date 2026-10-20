@@ -632,6 +632,8 @@ void PhoneNavBridge::restore_layout() {
   {
     const std::lock_guard<std::mutex> lock(state_mutex_);
     render_layout_ = layout;
+    render_layout_revision_ = revision;
+    layout_rendered_ = false;
     applied_layout_revision_ = revision;
     layout_nvs_saved_ = restored;
     pending_layout_ = {};
@@ -706,6 +708,7 @@ void PhoneNavBridge::apply_pending_layout() {
     // The renderer now shows exactly the layout that was just applied, whether
     // or not the phone pushed a newer one in the meantime.
     render_layout_ = layout;
+    render_layout_revision_ = pending.layout_revision;
     // A newer push may have landed while the flash write was running. Its
     // revision is strictly greater than the one we just applied, because
     // consume_ui_layout() answers duplicates and rollbacks without touching the
@@ -1421,9 +1424,15 @@ void PhoneNavBridge::render_pending() {
     // arrives through moto_nav_ui_apply_layout() and both are ANDed inside.
     moto_nav_ui_set_music_page_enabled(
         render_media_music_available_ ? 1U : 0U);
-    // Re-apply the retained layout so a layout pushed before the objects
-    // existed, or a recreated page, still shows the phone's arrangement.
-    moto_nav_ui_apply_layout(&render_layout_);
+    // Re-apply the retained layout only when a push changed it (or on the
+    // first navigation frame after boot/page creation). Coordinating every
+    // frame used to cost enough LVGL time to trigger BLE supervision timeouts.
+    if(!layout_rendered_ ||
+       rendered_layout_revision_ != render_layout_revision_) {
+      moto_nav_ui_apply_layout(&render_layout_);
+      rendered_layout_revision_ = render_layout_revision_;
+      layout_rendered_ = true;
+    }
     presenter_.apply_to_lvgl();
     // Layout bookkeeping runs on the same 40 Hz path as the display, never on
     // the BLE worker: a push is applied and persisted one frame after it

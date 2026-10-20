@@ -64,6 +64,9 @@ struct WifiProvisioning::Impl {
   Credentials credentials;
   bool has_credentials = false;
   bool temporary_connect = false;  // Do not touch NVS on temporary connects.
+  // Set by disconnect()/forget(): late STA events from the previous attempt
+  // must not resurrect the connection or overwrite the Off state.
+  bool manual_off = false;
 
   bool scan_running = false;
   std::uint32_t reconnect_attempt = 0;
@@ -287,15 +290,23 @@ void handle_scan_done(WifiProvisioning::Impl& impl) {
 void handle_event(WifiProvisioning::Impl& impl, const Event& event) {
   switch (event.type) {
     case EventType::StaStart:
-      if (impl.state != State::Connected) {
+      if (impl.manual_off) {
+        impl.publish(State::Off, Error::None);
+      } else if (impl.state != State::Connected) {
         impl.publish(State::Connecting, Error::None);
       }
       break;
     case EventType::GotIp:
+      impl.reconnect_attempt = 0;
       impl.publish(State::Connected, Error::None);
       break;
     case EventType::StaDisconnected: {
       impl.ipv4_le = 0;
+      if (impl.manual_off) {
+        // The user pressed 断开/忘记; do not reconnect and keep the UI Off.
+        impl.publish(State::Off, Error::None);
+        break;
+      }
       if (impl.has_credentials && !impl.temporary_connect) {
         // Map the disconnect reason only loosely: the device keeps trying, so
         // surface "auth" only for the first attempts and timeout afterwards.
@@ -380,6 +391,7 @@ esp_err_t WifiProvisioning::start(StatusCallback callback, void* context,
   load_credentials(*impl_);
   if (impl_->has_credentials) {
     impl_->ssid = impl_->credentials.ssid;
+    impl_->manual_off = false;
     ESP_LOGI(kTag, "restored credentials for %s",
              impl_->credentials.ssid.c_str());
     // Mirror save_and_connect(): select the station mode first, then stop the
@@ -392,7 +404,9 @@ esp_err_t WifiProvisioning::start(StatusCallback callback, void* context,
     esp_wifi_start();
     // Start the association right away: waiting for a scan to finish would
     // leave the device idle for several seconds after every reboot.
-    esp_wifi_connect();
+    if (esp_wifi_connect() != ESP_OK) {
+      impl_->publish(State::Failed, Error::Internal);
+    }
   } else {
     impl_->publish(State::NoCredentials, Error::None);
   }
@@ -406,6 +420,7 @@ esp_err_t WifiProvisioning::save_and_connect(const Credentials& credentials) {
   impl_->credentials = credentials;
   impl_->has_credentials = !credentials.ssid.empty();
   impl_->temporary_connect = false;
+  impl_->manual_off = false;
   impl_->reconnect_attempt = 0;
   impl_->ssid = credentials.ssid;
   persist_credentials(*impl_);
@@ -416,7 +431,10 @@ esp_err_t WifiProvisioning::save_and_connect(const Credentials& credentials) {
   esp_wifi_stop();
   apply_sta_config(*impl_);
   esp_wifi_start();
-  esp_wifi_connect();
+  if (esp_wifi_connect() != ESP_OK) {
+    impl_->publish(State::Failed, Error::Internal);
+    return ESP_FAIL;
+  }
   return ESP_OK;
 }
 
@@ -428,6 +446,7 @@ esp_err_t WifiProvisioning::connect_temporary(const Credentials& credentials) {
   impl_->credentials = credentials;
   impl_->has_credentials = true;
   impl_->temporary_connect = true;
+  impl_->manual_off = false;
   impl_->reconnect_attempt = 0;
   impl_->ssid = credentials.ssid;
   impl_->publish(State::Connecting, Error::None);
@@ -437,7 +456,10 @@ esp_err_t WifiProvisioning::connect_temporary(const Credentials& credentials) {
   esp_wifi_stop();
   apply_sta_config(*impl_);
   esp_wifi_start();
-  esp_wifi_connect();
+  if (esp_wifi_connect() != ESP_OK) {
+    impl_->publish(State::Failed, Error::Internal);
+    return ESP_FAIL;
+  }
   return ESP_OK;
 }
 
@@ -448,6 +470,7 @@ esp_err_t WifiProvisioning::disconnect() {
   if (impl_->reconnect_timer != nullptr) {
     esp_timer_stop(impl_->reconnect_timer);
   }
+  impl_->manual_off = true;
   esp_wifi_disconnect();
   impl_->publish(State::Off, Error::None);
   return ESP_OK;

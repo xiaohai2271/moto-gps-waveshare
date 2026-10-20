@@ -1,6 +1,9 @@
 package dev.glimpse.motogps.ble
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -45,6 +48,10 @@ class Esp32BleCentral(
     }
 
     private val main = Handler(Looper.getMainLooper())
+    private val appContext = context.applicationContext
+    /** Last round display that completed a handshake, reused after a restart. */
+    private val linkPrefs =
+        appContext.getSharedPreferences("ble_link", Context.MODE_PRIVATE)
     private val codec = MotoBleCodec()
     private val handshake = HandshakeMachine()
     private val outbound = OutboundQueue()
@@ -132,7 +139,35 @@ class Esp32BleCentral(
         reconnect.reset()
         _state.value = State.Connecting(address)
         transport.stopScan()
-        transport.connect(address)
+        try {
+            transport.connect(address)
+        } catch (error: SecurityException) {
+            // Android 12+ throws when BLUETOOTH_CONNECT is missing; surface it
+            // as a state instead of crashing the process.
+            _state.value = State.Failed("缺少蓝牙连接权限：${error.message ?: "BLUETOOTH_CONNECT"}")
+        }
+    }
+
+    /**
+     * Reconnects the round display that completed the last handshake, so
+     * reopening the app (or recovering from process death) returns to the
+     * previous session without a manual scan. Returns false when there is no
+     * saved device. Permission and transport failures are published as
+     * [State.Failed] with a user-readable reason.
+     */
+    fun autoConnectLast(): Boolean {
+        val address = linkPrefs.getString(KEY_LAST_ADDRESS, null)
+        if (address.isNullOrEmpty()) return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            _state.value = State.Failed("缺少蓝牙权限，无法自动连接上次的圆屏")
+            return false
+        }
+        logLine("自动连接上次的圆屏 $address")
+        connect(address)
+        return true
     }
 
     fun disconnect() {
@@ -665,6 +700,9 @@ class Esp32BleCentral(
                     capabilities = negotiated.capabilities,
                     degraded = negotiated.degraded,
                 )
+                targetAddress?.takeIf { it.isNotEmpty() }?.let { address ->
+                    linkPrefs.edit().putString(KEY_LAST_ADDRESS, address).apply()
+                }
                 logLine(
                     "握手完成：frameSize=${negotiated.frameSize} " +
                         "capabilities=0x${negotiated.capabilities.toString(16)}" +
@@ -816,6 +854,7 @@ class Esp32BleCentral(
     }
 
     private companion object {
+        const val KEY_LAST_ADDRESS = "last_device_address"
         const val SCAN_DURATION_MS = 20_000L
         const val DEVICE_TIMEOUT_MS = 5_000L
         const val MAX_HANDSHAKE_ATTEMPTS = 5

@@ -87,6 +87,7 @@ class NavigationSession(
 
     private var lastFix: GpsLocationSource.Fix? = null
     private var navigating = false
+    private var demoDriveJob: Job? = null
     private var ticker: Job? = null
     private var lastSnapshotAt = 0L
     private var lastGeometryKey: String? = null
@@ -622,6 +623,78 @@ class NavigationSession(
             pendingDebugQuery = null
             search(query!!)
         }
+        // The demo used to stop here: the simulated fix never moved, so the
+        // round display only ever showed the planning/navigating frame at a
+        // standstill. Drive the rider along the planned route so the demo
+        // covers planning, driving and arrival.
+        demoDriveJob?.cancel()
+        demoDriveJob = scope.launch { runDemoDrive() }
+    }
+
+    private suspend fun runDemoDrive() {
+        var waitedMs = 0
+        while (!navigating && waitedMs < 20_000) {
+            delay(200)
+            waitedMs += 200
+        }
+        if (!navigating) {
+            log("演示导航未开始：等待路线规划超时")
+            return
+        }
+        while (_state.value.route == null && waitedMs < 30_000) {
+            delay(200)
+            waitedMs += 200
+        }
+        val destination = _state.value.selected ?: run {
+            log("演示导航缺少目的地")
+            return
+        }
+        val start = lastFix ?: run {
+            log("演示导航缺少起点")
+            return
+        }
+        // The core needs the first route + fix pair before it accepts motion.
+        delay(600)
+        val total = haversineM(
+            start.longitude, start.latitude,
+            destination.longitude, destination.latitude,
+        )
+        if (total < 5.0) {
+            log("演示导航距离过短，无法模拟行驶")
+            return
+        }
+        val speedMps = 13.0
+        val stepMs = 200L
+        val bearing = bearingDeg(
+            start.longitude, start.latitude,
+            destination.longitude, destination.latitude,
+        )
+        log("演示导航：模拟行驶 ${total.roundToInt()} m，约 ${(total / speedMps).roundToInt()} s")
+        var travelledM = 0.0
+        while (navigating && travelledM < total) {
+            delay(stepMs)
+            travelledM = (travelledM + speedMps * stepMs / 1000.0).coerceAtMost(total)
+            val fraction = travelledM / total
+            val lon = start.longitude + (destination.longitude - start.longitude) * fraction
+            val lat = start.latitude + (destination.latitude - start.latitude) * fraction
+            deliverFix(
+                GpsLocationSource.Fix(
+                    longitude = lon,
+                    latitude = lat,
+                    accuracyM = 5.0,
+                    speedMps = speedMps,
+                    headingDeg = bearing,
+                    timestampMs = System.currentTimeMillis(),
+                    provider = "simulated",
+                ),
+            )
+        }
+        if (!navigating) return
+        log("演示导航：已到达目的地")
+        // Keep the arrival frame on screen for a moment, then end navigation
+        // so the round display returns to the ready state with a terminal frame.
+        delay(3_000)
+        if (navigating) stop()
     }
 
     fun start() {
@@ -681,6 +754,8 @@ class NavigationSession(
 
     fun stop() {
         navigating = false
+        demoDriveJob?.cancel()
+        demoDriveJob = null
         ticker?.cancel()
         ticker = null
         // cancel() resets the core session (state -> Idle, no destination, no
@@ -718,6 +793,8 @@ class NavigationSession(
     }
 
     fun close() {
+        demoDriveJob?.cancel()
+        demoDriveJob = null
         stop()
         location.stop()
         engine.close()
@@ -927,6 +1004,17 @@ class NavigationSession(
             kotlin.math.cos(Math.toRadians(lat1)) * kotlin.math.cos(Math.toRadians(lat2)) *
             kotlin.math.sin(dLon / 2) * kotlin.math.sin(dLon / 2)
         return 2 * r * kotlin.math.asin(kotlin.math.sqrt(h))
+    }
+
+    private fun bearingDeg(lon1: Double, lat1: Double, lon2: Double, lat2: Double): Double {
+        val phi1 = Math.toRadians(lat1)
+        val phi2 = Math.toRadians(lat2)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val y = kotlin.math.sin(dLon) * kotlin.math.cos(phi2)
+        val x = kotlin.math.cos(phi1) * kotlin.math.sin(phi2) -
+            kotlin.math.sin(phi1) * kotlin.math.cos(phi2) * kotlin.math.cos(dLon)
+        val degrees = Math.toDegrees(kotlin.math.atan2(y, x))
+        return (degrees + 360.0) % 360.0
     }
 
     private fun sendSnapshot(snapshot: EngineSnapshot, priority: Boolean = false) {

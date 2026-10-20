@@ -50,6 +50,10 @@ import dev.glimpse.motogps.ble.DecodedWifiStatus
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WifiSettingsSheet(vm: WifiProvisioningViewModel, onDismiss: () -> Unit) {
+    // The scan list and the manual form share one SSID: tapping a network
+    // fills the form so the user only types the password (previously the tap
+    // only wrote a log line and nothing happened — device-reported).
+    var selectedSsid by remember { mutableStateOf("") }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -84,10 +88,14 @@ fun WifiSettingsSheet(vm: WifiProvisioningViewModel, onDismiss: () -> Unit) {
             WifiAutoHotspotSection(vm)
 
             Spacer(Modifier.height(16.dp))
-            WifiScanSection(vm)
+            WifiScanSection(vm, onSelectAp = { selectedSsid = it })
 
             Spacer(Modifier.height(16.dp))
-            WifiManualEntrySection(vm)
+            WifiManualEntrySection(
+                vm,
+                initialSsid = selectedSsid,
+                onSsidChange = { selectedSsid = it },
+            )
 
             Spacer(Modifier.height(24.dp))
         }
@@ -267,7 +275,7 @@ private fun StatusRow(label: String, value: String) {
 }
 
 @Composable
-private fun WifiScanSection(vm: WifiProvisioningViewModel) {
+private fun WifiScanSection(vm: WifiProvisioningViewModel, onSelectAp: (String) -> Unit) {
     val scan by vm.wifiScan.collectAsState()
     val scanInFlight by vm.scanInFlight.collectAsState()
 
@@ -300,11 +308,7 @@ private fun WifiScanSection(vm: WifiProvisioningViewModel) {
         )
     } else {
         aps.forEach { ap ->
-            WifiApRow(ap = ap, onClick = {
-                // Selecting an AP fills the manual entry section — handled by
-                // the parent screen through the vm state; here we just log.
-                android.util.Log.d("WifiSettings", "selected ${ap.ssid}")
-            })
+            WifiApRow(ap = ap, onClick = { onSelectAp(ap.ssid) })
         }
     }
 }
@@ -335,18 +339,30 @@ private fun WifiApRow(ap: DecodedWifiAp, onClick: () -> Unit) {
 }
 
 @Composable
-private fun WifiManualEntrySection(vm: WifiProvisioningViewModel) {
-    var ssid by remember { mutableStateOf("") }
+private fun WifiManualEntrySection(
+    vm: WifiProvisioningViewModel,
+    initialSsid: String,
+    onSsidChange: (String) -> Unit,
+) {
+    var ssid by remember { mutableStateOf(initialSsid) }
     var password by remember { mutableStateOf("") }
     var hidden by remember { mutableStateOf(false) }
     var autoReconnect by remember { mutableStateOf(true) }
+
+    // A scan-row tap updates the field without clearing what the user typed.
+    androidx.compose.runtime.LaunchedEffect(initialSsid) {
+        if (initialSsid.isNotBlank()) ssid = initialSsid
+    }
 
     Text("手动连接", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
     Spacer(Modifier.height(8.dp))
 
     OutlinedTextField(
         value = ssid,
-        onValueChange = { ssid = it },
+        onValueChange = {
+            ssid = it
+            onSsidChange(it)
+        },
         label = { Text("网络名称 (SSID)") },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
