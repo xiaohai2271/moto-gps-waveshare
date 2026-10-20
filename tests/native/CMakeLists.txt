@@ -110,6 +110,7 @@ find_package(Threads REQUIRED)
 add_executable(phone_nav_bridge_tests
   phone_nav_bridge_tests.cpp
   esp32_host_stubs/phone_nav_bridge_platform_stubs.cpp
+  esp32_host_stubs/wifi_provisioning_stubs.cpp
   "${CMAKE_CURRENT_LIST_DIR}/../../platforms/esp32/main/phone_nav_bridge.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/../../shared/nav_presenter/src/moto_nav_presenter.cpp"
 )
