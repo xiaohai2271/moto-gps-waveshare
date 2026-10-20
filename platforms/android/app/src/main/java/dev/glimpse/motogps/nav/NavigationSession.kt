@@ -91,6 +91,7 @@ class NavigationSession(
     private var ticker: Job? = null
     private var lastSnapshotAt = 0L
     private var lastGeometryKey: String? = null
+    private var lastGeometrySentAtMs = 0L
     private var bleWasReady = false
     private var requestCounter = 0
     private var hasLoggedFix = false
@@ -828,6 +829,7 @@ class NavigationSession(
         // The next navigation must resend its geometry even if the gateway
         // reuses the route token/generation.
         lastGeometryKey = null
+        lastGeometrySentAtMs = 0L
         chosenPreviewRoute = null
         suppliedPreviewRoute = false
         // iOS stopNavigation(): return to the destination search state.
@@ -984,6 +986,7 @@ class NavigationSession(
             )
             feedEngine(accepted)
             lastGeometryKey = null
+            lastGeometrySentAtMs = 0L
         }.onFailure { error ->
             log("路线应用失败：${error.message}")
         }
@@ -1142,8 +1145,16 @@ class NavigationSession(
     private fun sendGeometryIfChanged(snapshot: EngineSnapshot) {
         if (!snapshot.hasRouteView || snapshot.routeViewPoints.size < 2) return
         val key = "${snapshot.routeId}/${snapshot.routeGeneration}/${snapshot.routeViewPoints.size}"
-        if (key == lastGeometryKey) return
+        val now = SystemClock.elapsedRealtime()
+        // RouteGeometry is a fragmented message and was previously sent once.
+        // A single lost fragment left the round display with no route until the
+        // next route change. Re-send the same token/generation every 5 s while
+        // navigating; the device reassembles atomically, so this is idempotent
+        // and heals a lossy link (device-reported blank map).
+        val stale = now - lastGeometrySentAtMs >= 5_000
+        if (key == lastGeometryKey && !stale) return
         lastGeometryKey = key
+        lastGeometrySentAtMs = now
         val token = NativeBridge.bleRouteToken(snapshot.routeId)
         val points = snapshot.routeViewPoints
         val chunkCount = ((points.size + MAX_POINTS_PER_CHUNK - 1) / MAX_POINTS_PER_CHUNK)
