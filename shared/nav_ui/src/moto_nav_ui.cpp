@@ -445,6 +445,43 @@ void apply_component(lv_obj_t *object, const moto_ui_component_layout_t &c,
     }
 }
 
+// Text components are a two-line block: a centred value with its unit or
+// caption directly underneath. The block is centred inside the §4.3 box so the
+// value never drifts to the box corner, and the unit can no longer collide with
+// the neighbouring speed-limit sign (device-reported overlap).
+void place_text_component(lv_obj_t *object,
+                          const moto_ui_component_layout_t &c,
+                          lv_obj_t *secondary) {
+    if(object == nullptr) return;
+    if(!c.enabled) {
+        lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+        if(secondary != nullptr) lv_obj_add_flag(secondary, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(object, LV_OBJ_FLAG_HIDDEN);
+    if(secondary != nullptr) lv_obj_clear_flag(secondary, LV_OBJ_FLAG_HIDDEN);
+    int width = 0, height = 0;
+    component_box(c.id, c.size, width, height);
+    const lv_font_t *font = font_for_tier(c.size);
+    const lv_font_t *caption = caption_font_for_tier(c.size);
+    lv_obj_set_style_text_font(object, font, 0);
+    lv_obj_set_style_text_align(object, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_opa(object, opacity_opa(c.opacity), 0);
+    const int line = lv_font_get_line_height(font);
+    int total = line;
+    if(secondary != nullptr) {
+        lv_obj_set_style_text_font(secondary, caption, 0);
+        lv_obj_set_style_text_align(secondary, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_opa(secondary, opacity_opa(c.opacity), 0);
+        total += lv_font_get_line_height(caption) + 2;
+    }
+    lv_obj_set_size(object, width, line);
+    lv_obj_set_pos(object, c.x, c.y + (height - total) / 2);
+    if(secondary != nullptr) {
+        lv_obj_align_to(secondary, object, LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
+    }
+}
+
 lv_color_t rgb_color(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
     return LV_COLOR_MAKE(r, g, b);
 }
@@ -1833,7 +1870,7 @@ void update_navigation(const moto_ui_state_t *state) {
                       static_cast<unsigned>(state->speed_kph));
         lv_label_set_text(ui.nav_speed, speed_text);
         lv_obj_align_to(ui.nav_speed_unit, ui.nav_speed,
-                        LV_ALIGN_OUT_RIGHT_BOTTOM, 4, -6);
+                        LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
 
         char heading_text[12];
         std::snprintf(heading_text, sizeof(heading_text), "%03u°",
@@ -1842,7 +1879,7 @@ void update_navigation(const moto_ui_state_t *state) {
         lv_label_set_text(ui.nav_heading_cardinal,
                           cardinal_name(state->heading_deg));
         lv_obj_align_to(ui.nav_heading_cardinal, ui.nav_heading,
-                        LV_ALIGN_OUT_BOTTOM_MID, 0, px(2));
+                        LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
 
         set_component_visible(ui.nav_speed, speed != nullptr && speed->enabled, true);
         set_component_visible(ui.nav_speed_unit, speed != nullptr && speed->enabled,
@@ -1920,7 +1957,7 @@ void update_navigation(const moto_ui_state_t *state) {
         lv_label_set_text(ui.nav_remaining_distance, remaining);
         lv_obj_align_to(ui.nav_remaining_distance_caption,
                         ui.nav_remaining_distance,
-                        LV_ALIGN_OUT_BOTTOM_LEFT, 0, px(2));
+                        LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
     }
     if(ui.nav_remaining_time != nullptr) {
         char remaining[16];
@@ -1937,7 +1974,7 @@ void update_navigation(const moto_ui_state_t *state) {
         }
         lv_label_set_text(ui.nav_remaining_time, remaining);
         lv_obj_align_to(ui.nav_remaining_time_caption, ui.nav_remaining_time,
-                        LV_ALIGN_OUT_BOTTOM_LEFT, 0, px(2));
+                        LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
     }
 }
 
@@ -2805,13 +2842,30 @@ void apply_layout_internal(const moto_ui_layout_t *incoming) {
         const moto_ui_component_layout_t &c = ui.layout.components[i];
         switch(c.id) {
             case MOTO_UI_COMPONENT_SPEED:
-                apply_component(ui.nav_speed, c, ui.nav_speed_unit);
+                place_text_component(ui.nav_speed, c, ui.nav_speed_unit);
                 break;
-            case MOTO_UI_COMPONENT_SPEED_LIMIT:
-                apply_component(ui.nav_limit, c, ui.nav_limit_value);
+            case MOTO_UI_COMPONENT_SPEED_LIMIT: {
+                if(ui.nav_limit == nullptr) break;
+                if(!c.enabled) {
+                    lv_obj_add_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+                    break;
+                }
+                lv_obj_clear_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+                int limit_width = 0, limit_height = 0;
+                component_box(c.id, c.size, limit_width, limit_height);
+                lv_obj_set_size(ui.nav_limit, limit_width, limit_height);
+                lv_obj_set_pos(ui.nav_limit, c.x, c.y);
+                lv_obj_set_style_opa(ui.nav_limit, opacity_opa(c.opacity), 0);
+                if(ui.nav_limit_value != nullptr) {
+                    lv_obj_set_style_opa(ui.nav_limit_value,
+                                         opacity_opa(c.opacity), 0);
+                    lv_obj_center(ui.nav_limit_value);
+                }
                 break;
+            }
             case MOTO_UI_COMPONENT_HEADING:
-                apply_component(ui.nav_heading, c, ui.nav_heading_cardinal);
+                place_text_component(ui.nav_heading, c,
+                                     ui.nav_heading_cardinal);
                 break;
             case MOTO_UI_COMPONENT_MANEUVER: {
                 apply_component(ui.nav_maneuver, c);
@@ -2830,12 +2884,12 @@ void apply_layout_internal(const moto_ui_layout_t *incoming) {
                 break;
             }
             case MOTO_UI_COMPONENT_REMAINING_DISTANCE:
-                apply_component(ui.nav_remaining_distance, c,
-                                ui.nav_remaining_distance_caption);
+                place_text_component(ui.nav_remaining_distance, c,
+                                     ui.nav_remaining_distance_caption);
                 break;
             case MOTO_UI_COMPONENT_REMAINING_TIME:
-                apply_component(ui.nav_remaining_time, c,
-                                ui.nav_remaining_time_caption);
+                place_text_component(ui.nav_remaining_time, c,
+                                     ui.nav_remaining_time_caption);
                 break;
             case MOTO_UI_COMPONENT_PROGRESS_ARC:
                 if(ui.nav_progress != nullptr) {
