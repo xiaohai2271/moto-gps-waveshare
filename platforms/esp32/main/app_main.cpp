@@ -245,11 +245,13 @@ extern "C" void app_main(void) {
 
   // Demo generation fills the retained snapshot in place, but geometry and
   // LVGL projection still use deeper C++ call frames than a trivial task.
-  // The worker only touches the retained snapshot and the presenter, so a
-  // small stack is enough; it starts last because every worker stack comes
-  // from internal RAM that the WiFi controller also needs.
-  if (xTaskCreate(demo_tick_task, "moto_demo", 3'072, &phone_bridge, 2,
-                  nullptr) != pdPASS) {
+  // Like the power worker, its stack lives in PSRAM: the internal-RAM budget
+  // left by WiFi + QMI8658 cannot fit another 3 KiB block (device-observed
+  // "navigation demo task could not start"), and the worker never touches
+  // flash or the cache-disabled window.
+  if (xTaskCreateWithCaps(demo_tick_task, "moto_demo", 3'072, &phone_bridge, 2,
+                          nullptr,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     ESP_LOGW(kTag, "navigation demo task could not start");
   }
 
