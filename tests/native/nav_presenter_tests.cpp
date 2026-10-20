@@ -228,8 +228,8 @@ void test_heading_up_route_projection_keeps_rider_fixed() {
   const moto_ui_state_t& state = presenter.ui_state();
   CHECK(state.route_point_count == 2);
   constexpr int rider_x = MOTO_UI_CANVAS_WIDTH / 2;
-  // Default 232 px map height puts the rider at 196 px (84.5% down).
-  constexpr int rider_y = 196;
+  // Default 232 px map height puts the rider at the viewport centre (116 px).
+  constexpr int rider_y = 232 / 2;
   CHECK(state.route_points[0].x == rider_x);
   CHECK(state.route_points[0].y == rider_y);
   // Facing east means an eastbound route is drawn straight ahead/up while
@@ -255,7 +255,7 @@ void test_default_view_is_north_up_and_configurable() {
   presenter.update(snapshot);
 
   constexpr int rider_x = MOTO_UI_CANVAS_WIDTH / 2;
-  constexpr int rider_y = 196;
+  constexpr int rider_y = 232 / 2;
   CHECK(presenter.ui_state().heading_deg == 90);
   CHECK(presenter.ui_state().route_points[0].x == rider_x);
   CHECK(presenter.ui_state().route_points[0].y == rider_y);
@@ -273,7 +273,7 @@ void test_default_view_is_north_up_and_configurable() {
   // Map height moves the rider anchor; zoom doubles the metre-to-pixel scale.
   presenter.set_view_config(true, 320, 200);
   presenter.update(snapshot);
-  CHECK(presenter.ui_state().route_points[0].y == (320 * 196) / 232);
+  CHECK(presenter.ui_state().route_points[0].y == 320 / 2);
   CHECK(presenter.ui_state().route_points[1].x > rider_x + 80);
 }
 
@@ -324,7 +324,7 @@ void test_non_finite_heading_keeps_map_projection_finite() {
   CHECK(state.heading_deg == 0);
   CHECK(state.route_point_count == 2);
   constexpr int rider_x = MOTO_UI_CANVAS_WIDTH / 2;
-  constexpr int rider_y = 196;
+  constexpr int rider_y = 232 / 2;
   CHECK(state.route_points[0].x == rider_x);
   CHECK(state.route_points[0].y == rider_y);
 }
@@ -577,3 +577,4 @@ int main() {
   std::cout << "All nav_presenter checks passed\n";
   return EXIT_SUCCESS;
 }
+

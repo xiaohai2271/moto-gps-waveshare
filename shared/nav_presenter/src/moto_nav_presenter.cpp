@@ -14,10 +14,11 @@ constexpr double kLegacyCanvasSize = 360.0;
 constexpr double kUiScale =
     static_cast<double>(MOTO_UI_CANVAS_WIDTH) / kLegacyCanvasSize;
 constexpr double kBasePixelsPerMeter = 0.44 * kUiScale;
-// The rider sits 196/232 of the way down the default 232 px map viewport.
-// Follow the configured viewport height so shrinking the map keeps the same
-// forward-visibility ratio (docs/NAV_LAYOUT_EDITOR_PLAN.md §4.8).
-constexpr double kVehicleForwardRatio = 196.0 / 232.0;
+// The rider sits at the centre of the map viewport at every map height, so a
+// height change zooms the visible area around the rider instead of sliding the
+// rider up or down (device-reported). Forward visibility comes from the route
+// window itself, not from an off-centre marker.
+constexpr double kVehicleForwardRatio = 0.5;
 
 double radians(double degrees) { return degrees * kPi / 180.0; }
 

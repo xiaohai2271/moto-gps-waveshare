@@ -177,7 +177,7 @@
 ### 4.8 地图区
 
 - 只支持高度与透明度调整，不支持自由拖动；地图始终贴顶。
-- 高度变化会改变投影可视区域：Presenter 的车标中心 y 按地图高度等比调整（默认 `196 / 232 ≈ 84.5%`），保持前方视野比例；路线窗口按新高度裁剪。
+- 高度变化会改变投影可视区域：Presenter 的车标中心固定在地图区中心（`map_height_px / 2`），高度变化只缩放周围窗口；路线窗口按新高度裁剪。
 - 缩放：`zoom_percent` 50–200，100 = 现有 `0.44 px/m`。手机端按 `radius_m = clamp(500 × 100 / zoom_percent, 100, 1500)` 调整 MapScene 窗口；缩放到 50% 时窗口约 1 km，需要按现有 192 点上限做抽稀。
 - 图层开关：道路、建筑、路线。关闭后设备隐藏对应对象；手机可后续优化为不再发送对应数据。
 
@@ -402,7 +402,7 @@ repeat:
 - `moto_ui_state_t` 不新增字段，保持 iOS/Web 适配器不变；布局配置由 `PhoneNavBridge` 持有，分别配置 Presenter 与 NavUI。
 - `NavPresenter` 增加 `set_view_config(north_up, map_height_px, zoom_percent)`：
   - `north_up` 时投影航向取 0；
-  - 车标中心 y = `map_height_px × 196 / 232`（默认 232 时保持现有 196）；
+  - 车标中心 y = `map_height_px / 2`（始终位于地图区中心）；
   - 缩放系数作用于 `kMapPixelsPerMeter`；
   - 路线/道路/建筑裁剪到地图高度。
 - `moto_nav_ui_apply_layout(const moto_ui_layout_t *)` 保存 `north_up` 供车标旋转使用，并应用其余视觉属性。

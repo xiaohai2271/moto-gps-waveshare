@@ -277,7 +277,8 @@ private fun DrawScope.drawDemoStreets(layout: UiLayout, k: Float, showDemoData: 
         PreviewRoute.copy(alpha = layout.basemap.route.opacity / 100f),
         style = Stroke(layout.basemap.route.widthPx * k, cap = StrokeCap.Round),
     )
-    drawCircle(Color(0xFF007AFF), radius = 5f * k, center = Offset(0.50f * w, 0.62f * h))
+    // 车标固定在地图区中心（与固件一致），高度变化只缩放窗口。
+    drawCircle(Color(0xFF007AFF), radius = 5f * k, center = Offset(0.50f * w, 0.50f * h))
 }
 
 private fun DrawScope.drawArcs(layout: UiLayout, k: Float) {

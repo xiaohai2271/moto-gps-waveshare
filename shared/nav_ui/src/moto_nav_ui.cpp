@@ -2168,7 +2168,7 @@ void create_navigation_page() {
     // Exact y is re-set in apply_layout_internal() from the map height.
     lv_obj_set_size(ui.nav_marker, px(54), px(54));
     lv_obj_set_pos(ui.nav_marker, MOTO_UI_CANVAS_WIDTH / 2 - px(27),
-                   MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT * 196 / 232 - px(27));
+                   MOTO_UI_LAYOUT_DEFAULT_MAP_HEIGHT / 2 - px(27));
     lv_obj_clear_flag(ui.nav_marker, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(ui.nav_marker, draw_vehicle_marker,
                         LV_EVENT_DRAW_MAIN_END, nullptr);
@@ -2975,12 +2975,10 @@ void apply_layout_internal(const moto_ui_layout_t *incoming) {
         ui.layout.music_page_enabled != 0 && ui.media_music_available;
     update_page_dots();
     align_accel_readout();
-    // The projection depends on the viewport height; the next motion frame
-    // picks it up through PhoneNavBridge's view configuration. The rider sits
-    // 196/232 of the way down the viewport (§4.8), so the marker follows the
-    // same ratio the presenter uses for the route projection.
+    // The marker stays at the centre of the map viewport (§4.8) at every map
+    // height; height changes zoom the window around the rider.
     if(ui.nav_marker != nullptr) {
-        const int marker_y = map_height * 196 / 232;
+        const int marker_y = map_height / 2;
         lv_obj_set_pos(ui.nav_marker, MOTO_UI_CANVAS_WIDTH / 2 - px(27),
                        marker_y - px(27));
     }

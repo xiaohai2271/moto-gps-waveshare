@@ -50,18 +50,26 @@ object MapSceneBuilder {
                 if (roads.size >= MAX_ROADS) break
                 val o = roadsArray.getJSONObject(i)
                 val points = readPoints(o) ?: continue
-                val clipped = clip(points, originLon, originLat, dLon, dLat) ?: continue
-                roads += Road(roadClass(o.optString("class")), simplify(clipped, MAX_ROAD_POINTS_PER_ROAD))
+                // Split into contiguous visible runs. Filtering individual
+                // points used to join the last point before an exit to the
+                // first point after re-entry, drawing a straight "road" across
+                // the map where none exists (device-reported stray lines).
+                for (run in clipRuns(points, originLon, originLat, dLon, dLat)) {
+                    if (roads.size >= MAX_ROADS) break
+                    roads += Road(roadClass(o.optString("class")), simplify(run, MAX_ROAD_POINTS_PER_ROAD))
+                }
             }
             val buildingsArray = root.optJSONArray("buildings") ?: return@forEach
             for (i in 0 until buildingsArray.length()) {
                 if (buildings.size >= MAX_BUILDINGS) break
                 val o = buildingsArray.getJSONObject(i)
                 val points = readPoints(o) ?: continue
-                val clipped = clip(points, originLon, originLat, dLon, dLat) ?: continue
+                // A footprint clipped point-by-point stops being a polygon and
+                // renders as an open, wrong outline; drop it whole instead.
+                if (!allInside(points, originLon, originLat, dLon, dLat)) continue
                 buildings += Building(
                     buildingClass(o.optString("class")),
-                    simplify(clipped, MAX_BUILDING_POINTS_PER_FOOTPRINT),
+                    simplify(points, MAX_BUILDING_POINTS_PER_FOOTPRINT),
                 )
             }
         }
@@ -135,17 +143,40 @@ object MapSceneBuilder {
         return out
     }
 
-    private fun clip(
+    private fun clipRuns(
         points: List<Pair<Double, Double>>,
         originLon: Double,
         originLat: Double,
         dLon: Double,
         dLat: Double,
-    ): List<Pair<Double, Double>>? {
-        val inside = points.filter {
-            abs(it.first - originLon) <= dLon && abs(it.second - originLat) <= dLat
+    ): List<List<Pair<Double, Double>>> {
+        val runs = mutableListOf<List<Pair<Double, Double>>>()
+        var current = mutableListOf<Pair<Double, Double>>()
+        fun flush() {
+            if (current.size >= 2) runs += current.toList()
+            current = mutableListOf()
         }
-        return if (inside.size >= 2) inside else null
+        points.forEach { point ->
+            val inside = abs(point.first - originLon) <= dLon &&
+                abs(point.second - originLat) <= dLat
+            if (inside) {
+                current += point
+            } else {
+                flush()
+            }
+        }
+        flush()
+        return runs
+    }
+
+    private fun allInside(
+        points: List<Pair<Double, Double>>,
+        originLon: Double,
+        originLat: Double,
+        dLon: Double,
+        dLat: Double,
+    ): Boolean = points.all {
+        abs(it.first - originLon) <= dLon && abs(it.second - originLat) <= dLat
     }
 
     private fun simplify(points: List<Pair<Double, Double>>, maxPoints: Int): List<Pair<Double, Double>> {
