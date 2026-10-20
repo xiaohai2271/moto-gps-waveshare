@@ -93,6 +93,8 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
     var showPrivacy by remember { mutableStateOf(false) }
     var showMapDownloads by remember { mutableStateOf(false) }
     var showLayoutEditor by remember { mutableStateOf(false) }
+    var showDemoDialog by remember { mutableStateOf(false) }
+    var demoQuery by remember { mutableStateOf("泉城广场") }
     var showPermissions by remember { mutableStateOf(false) }
     var showWifi by remember { mutableStateOf(false) }
 
@@ -116,6 +118,7 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
                 onOpenGateway = { showGateway = true },
                 onOpenPrivacy = { showPrivacy = true },
                 onOpenMapDownloads = { showMapDownloads = true },
+                onStartDemo = { showDemoDialog = true },
             )
             MotoScreen.RoutePreview -> RoutePreviewScreen(
                 vm,
@@ -166,6 +169,42 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
     }
     BackHandler(enabled = screen == MotoScreen.RoutePreview) {
         vm.clearDestination()
+    }
+
+    if (showDemoDialog) {
+        AlertDialog(
+            onDismissRequest = { showDemoDialog = false },
+            title = { Text("演示导航") },
+            text = {
+                Column {
+                    Text(
+                        "输入目的地后，圆屏会演示规划、行驶（速度线性加减速）和到达的完整流程。",
+                        fontSize = 13.sp,
+                        color = IosSecondary,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = demoQuery,
+                        onValueChange = { demoQuery = it },
+                        label = { Text("目的地") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDemoDialog = false
+                        vm.startDemo(demoQuery)
+                    },
+                    enabled = demoQuery.isNotBlank(),
+                ) { Text("开始演示") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDemoDialog = false }) { Text("取消") }
+            },
+        )
     }
 }
 
@@ -260,6 +299,7 @@ private fun HomeScreen(
     onOpenGateway: () -> Unit,
     onOpenPrivacy: () -> Unit,
     onOpenMapDownloads: () -> Unit,
+    onStartDemo: () -> Unit,
 ) {
     val state by vm.state.collectAsState()
     val recentPlaces by vm.recentPlaces.collectAsState()
@@ -360,7 +400,7 @@ private fun HomeScreen(
                     MapDownloadsRow { onOpenMapDownloads() }
                     RowDivider()
                     Row(
-                        Modifier.fillMaxWidth().clickable { vm.startDemo() }.padding(horizontal = 16.dp, vertical = 11.dp),
+                        Modifier.fillMaxWidth().clickable { onStartDemo() }.padding(horizontal = 16.dp, vertical = 11.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("▶️", fontSize = 20.sp)

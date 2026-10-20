@@ -153,7 +153,7 @@ class NavViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- demo -----------------------------------------------------------------
 
-    fun startDemo() = session.startDemo()
+    fun startDemo(query: String = "泉城广场") = session.startDemo(query)
 
     // --- device / gateway / media ---------------------------------------------
 

@@ -1,4 +1,4 @@
-﻿#include "moto_nav_presenter.hpp"
+#include "moto_nav_presenter.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -393,6 +393,7 @@ void NavPresenter::update(const NavSnapshot& snapshot) {
           : 0;
   ui_state_.online = snapshot.network == NetworkState::Online ? 1 : 0;
   ui_state_.has_destination = snapshot.has_destination ? 1 : 0;
+  ui_state_.has_next_maneuver = snapshot.has_next_maneuver ? 1 : 0;
   ui_state_.route_request_in_flight =
       snapshot.route_request_in_flight ? 1 : 0;
   ui_state_.route_identity = route_identity(snapshot.route_id);

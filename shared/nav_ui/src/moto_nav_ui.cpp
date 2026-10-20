@@ -1844,7 +1844,13 @@ void update_navigation(const moto_ui_state_t *state) {
 
     // Never suggest "go straight for 0 m" while there is no route. Waiting is
     // a connection state, not actionable navigation guidance.
+    // Guidance begins as soon as the phone reports a navigating state, even if
+    // the (fragmented) route geometry has not reassembled yet. Gating this on
+    // route_point_count left the device on READY/请选择目的地 while the phone
+    // was already navigating (device-reported).
     const bool has_guidance = ui.demo_active ||
+                              state->mode == MOTO_UI_NAVIGATING ||
+                              state->mode == MOTO_UI_REROUTING ||
                               state->mode == MOTO_UI_ARRIVED ||
                               state->route_point_count >= 2;
     ui.navigation_has_guidance = has_guidance;
@@ -1929,6 +1935,18 @@ void update_navigation(const moto_ui_state_t *state) {
     if(state->mode == MOTO_UI_ARRIVED) std::snprintf(value, sizeof(value), "0");
     lv_label_set_text(ui.nav_distance, value);
     lv_label_set_text(ui.nav_unit, unit);
+    // The distance text is part of the maneuver component. Hide it when the
+    // snapshot carries no next maneuver instead of leaving the constructor's
+    // placeholder visible as a mysterious "0.0" in the middle of the screen.
+    const bool has_maneuver = state->has_next_maneuver != 0 ||
+                              state->mode == MOTO_UI_ARRIVED;
+    if(has_maneuver) {
+        lv_obj_clear_flag(ui.nav_distance, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ui.nav_unit, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ui.nav_distance, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.nav_unit, LV_OBJ_FLAG_HIDDEN);
+    }
     // The distance is anchored inside the maneuver component box (layout
     // position), never by an absolute per-frame align: a layout push moves
     // the box and this text follows on the next frame.

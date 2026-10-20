@@ -611,17 +611,18 @@ class NavigationSession(
 
     // --- demo（iOS 演示模式：模拟定位 + 真实路网，明确标注） ----------------
 
-    fun startDemo() {
+    fun startDemo(query: String = "泉城广场") {
         if (navigating) return
-        log("演示导航开始：位置与行驶过程为模拟数据")
+        val destination = query.trim().ifBlank { "泉城广场" }
+        log("演示导航开始：目的地「$destination」，位置与行驶过程为模拟数据")
         // Jinan demo fixture origin (shared/demo_fixture), labelled simulated.
         debugSimulatedFix(117.1210, 36.6705)
-        pendingDebugQuery = "泉城广场"
+        pendingDebugQuery = destination
         autoStartAfterSearch = true
         if (lastFix != null) {
-            val query = pendingDebugQuery
+            val pending = pendingDebugQuery
             pendingDebugQuery = null
-            search(query!!)
+            search(pending!!)
         }
         // The demo used to stop here: the simulated fix never moved, so the
         // round display only ever showed the planning/navigating frame at a
@@ -645,49 +646,98 @@ class NavigationSession(
             delay(200)
             waitedMs += 200
         }
-        val destination = _state.value.selected ?: run {
+        val route = _state.value.route ?: run {
+            log("演示导航缺少路线")
+            return
+        }
+        if (_state.value.selected == null) {
             log("演示导航缺少目的地")
             return
         }
-        val start = lastFix ?: run {
-            log("演示导航缺少起点")
+        val gcjPoints = route.polyline.map { it.longitude to it.latitude }
+        if (gcjPoints.size < 2) {
+            log("演示导航路线点不足")
             return
         }
-        // The core needs the first route + fix pair before it accepts motion.
-        delay(600)
-        val total = haversineM(
-            start.longitude, start.latitude,
-            destination.longitude, destination.latitude,
-        )
+        // Route geometry is GCJ-02; fixes are WGS84. Invert the offset so the
+        // simulated rider follows the same polyline the device draws.
+        val wgs = gcjPoints.map { gcjToWgs84(it.first, it.second) }
+        val cumulative = DoubleArray(wgs.size)
+        for (index in 1 until wgs.size) {
+            cumulative[index] = cumulative[index - 1] + haversineM(
+                wgs[index - 1].first, wgs[index - 1].second,
+                wgs[index].first, wgs[index].second,
+            )
+        }
+        val total = cumulative.last()
         if (total < 5.0) {
             log("演示导航距离过短，无法模拟行驶")
             return
         }
-        val speedMps = 13.0
-        val stepMs = 200L
-        val bearing = bearingDeg(
-            start.longitude, start.latitude,
-            destination.longitude, destination.latitude,
-        )
-        log("演示导航：模拟行驶 ${total.roundToInt()} m，约 ${(total / speedMps).roundToInt()} s")
+        // The core needs the first route + fix pair before it accepts motion.
+        delay(600)
+
+        val cruiseMps = 14.0
+        val accelMps2 = 1.2
+        fun targetSpeed(distanceM: Double): Double {
+            val toEnd = total - distanceM
+            val rampM = minOf(distanceM, toEnd).coerceAtLeast(0.0)
+            return minOf(cruiseMps, kotlin.math.sqrt(2.0 * accelMps2 * rampM))
+        }
+        fun pointAt(distanceM: Double): Triple<Double, Double, Double> {
+            var index = cumulative.indexOfFirst { it >= distanceM }
+            if (index <= 0) index = 1
+            val segmentStart = cumulative[index - 1]
+            val segmentLength = cumulative[index] - segmentStart
+            val fraction = if (segmentLength > 0.0) {
+                (distanceM - segmentStart) / segmentLength
+            } else {
+                0.0
+            }
+            val lon = wgs[index - 1].first +
+                (wgs[index].first - wgs[index - 1].first) * fraction
+            val lat = wgs[index - 1].second +
+                (wgs[index].second - wgs[index - 1].second) * fraction
+            val heading = bearingDeg(
+                wgs[index - 1].first, wgs[index - 1].second,
+                wgs[index].first, wgs[index].second,
+            )
+            return Triple(lon, lat, heading)
+        }
+
+        val stepMs = 100L
         var travelledM = 0.0
+        var lastLoggedM = 0.0
+        log(
+            "演示导航：沿路线模拟行驶 ${total.roundToInt()} m，" +
+                "速度 0→${cruiseMps.toInt()}→0 m/s 线性加减速",
+        )
         while (navigating && travelledM < total) {
             delay(stepMs)
-            travelledM = (travelledM + speedMps * stepMs / 1000.0).coerceAtMost(total)
-            val fraction = travelledM / total
-            val lon = start.longitude + (destination.longitude - start.longitude) * fraction
-            val lat = start.latitude + (destination.latitude - start.latitude) * fraction
+            // Keep a small floor so the first tick moves; the profile itself is
+            // v = sqrt(2·a·s), i.e. a constant acceleration and a linear speed
+            // ramp in time, matching how a rider actually pulls away and stops.
+            val speed = maxOf(0.8, targetSpeed(travelledM))
+            travelledM = (travelledM + speed * stepMs / 1_000.0).coerceAtMost(total)
+            val (lon, lat, heading) = pointAt(travelledM)
             deliverFix(
                 GpsLocationSource.Fix(
                     longitude = lon,
                     latitude = lat,
-                    accuracyM = 5.0,
-                    speedMps = speedMps,
-                    headingDeg = bearing,
+                    accuracyM = 4.0,
+                    speedMps = speed,
+                    headingDeg = heading,
                     timestampMs = System.currentTimeMillis(),
                     provider = "simulated",
                 ),
             )
+            if (travelledM - lastLoggedM >= 100.0 || travelledM >= total) {
+                log(
+                    "演示导航：速度 ${"%.1f".format(speed)} m/s，" +
+                        "已行驶 ${travelledM.roundToInt()} / ${total.roundToInt()} m",
+                )
+                lastLoggedM = travelledM
+            }
         }
         if (!navigating) return
         log("演示导航：已到达目的地")
@@ -695,6 +745,19 @@ class NavigationSession(
         // so the round display returns to the ready state with a terminal frame.
         delay(3_000)
         if (navigating) stop()
+    }
+
+    /** Iterative inverse of [NativeBridge.wgs84ToGcj02] (GCJ-02 → WGS84). */
+    private fun gcjToWgs84(lon: Double, lat: Double): Pair<Double, Double> {
+        var wgsLon = lon
+        var wgsLat = lat
+        repeat(6) {
+            val converted = NativeBridge.wgs84ToGcj02(wgsLon, wgsLat)
+            if (converted.size < 2) return lon to lat
+            wgsLon += lon - converted[0]
+            wgsLat += lat - converted[1]
+        }
+        return wgsLon to wgsLat
     }
 
     fun start() {
