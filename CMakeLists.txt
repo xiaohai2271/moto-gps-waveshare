@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(MOTO_BUILD_WEB "Build the Emscripten browser simulator" ${EMSCRIPTEN})
 option(MOTO_BUILD_TESTS "Build native navigation-core tests" ON)
+option(MOTO_BUILD_SIM
+       "Build the host virtual-device simulator (runs without hardware)" ON)
 
 set(LV_BUILD_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/config/lv_conf.h" CACHE PATH "LVGL configuration" FORCE)
 set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "Do not build LVGL demos" FORCE)
@@ -34,8 +36,15 @@ if(MOTO_BUILD_WEB)
     add_subdirectory(platforms/web/wasm)
 endif()
 
-if(MOTO_BUILD_TESTS AND NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN)
     enable_testing()
+endif()
+
+if(MOTO_BUILD_SIM AND NOT EMSCRIPTEN)
+    add_subdirectory(platforms/desktop)
+endif()
+
+if(MOTO_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_subdirectory(tests/coordinates)
     add_subdirectory(tests/native)
 endif()

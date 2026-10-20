@@ -60,6 +60,28 @@ cd platforms/android
 
 ![阶段一自检](../../docs/android-phase1-selfcheck.png)
 
+## 无硬件 BLE 联调（虚拟设备）
+
+仓库自带宿主虚拟设备（`platforms/desktop`），debug 包可以让真实的
+`Esp32BleCentral` 连到它，而不是连 ESP32：
+
+```powershell
+# 1) 电脑上启动虚拟设备（默认 9100）
+build\native\bin\moto_device_sim.exe --port 9100
+
+# 2) 手机/模拟器端口映射 + 置开关文件（debug 包才有 DebugMotoGpsApplication）
+adb reverse tcp:9100 tcp:9100
+adb shell run-as dev.glimpse.motogps sh -c "echo 127.0.0.1:9100 > files/ble_sim"
+
+# 3) 重新打开 App，扫描到 “MOTO GPS (virtual)” 后连接
+#    删除 files/ble_sim 即恢复真实 BluetoothGatt
+adb shell run-as dev.glimpse.motogps rm files/ble_sim
+```
+
+虚拟设备报告 MTU 185，因此 app 侧仍然是 182 字节帧、真实握手/队列/重连逻辑；
+只替换了 `BleTransport`。协议、导航、布局编辑、WiFi 配网都能在没有圆屏的情况下验证。
+边界见 `platforms/desktop/README.md`：它不替代射频、锁屏后台和面板验收。
+
 ## 接口依据（来自源码，不来自截图）
 
 - Service `7e57a000-b50c-4b6a-9c57-40a54e8e1000`；手机写 `…a001`，订阅通知 `…a002`；

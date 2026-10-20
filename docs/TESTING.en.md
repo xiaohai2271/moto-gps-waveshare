@@ -18,6 +18,24 @@ ctest --test-dir build/native --output-on-failure
 Covers coordinates, the route state machine, the protocol, the Presenter, the connection epoch, heading fusion and PhoneNavBridge.
 The tests use a Host Stub, which does not mean the real LVGL drawing / Bluetooth timing has been verified.
 
+## Host virtual device (no hardware)
+
+The default build also produces `moto_device_sim`: the real firmware bridge, the real
+LVGL UI and a loopback BLE link.
+
+```sh
+./build/native/bin/moto_device_sim --selftest --frames build/native/frames
+```
+
+The self-test covers the handshake, heartbeats, navigation/geometry/map/media/layout,
+WiFi provisioning, and asserts the round-display UI state and a changed framebuffer.
+CI runs it through `ctest`. A debug Android build can attach to the same process
+(`adb reverse tcp:9100` plus the `files/ble_sim` marker) without an ESP32.
+See `platforms/desktop/README.md` for details and limits.
+
+It does not verify BLE RF/pairing/background liveness, the CO5300 panel, PSRAM pressure,
+QMI8658, power, or real road routes.
+
 ## Node gateway
 
 ```sh

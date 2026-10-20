@@ -16,6 +16,20 @@ ctest --test-dir build/native --output-on-failure
 覆盖坐标、路线状态机、协议、Presenter、连接 epoch、航向融合和 PhoneNavBridge。
 测试中使用 Host Stub，不代表真实 LVGL 绘制/蓝牙时序已验证。
 
+## 宿主虚拟设备（无硬件）
+
+默认构建还会生成 `moto_device_sim`：真实固件桥接 + 真实 LVGL + loopback BLE 链路。
+
+```sh
+./build/native/bin/moto_device_sim --selftest --frames build/native/frames
+```
+
+自检走完握手、心跳、导航/几何/地图/媒体/布局、WiFi 配网，并断言圆屏 UI 状态和帧变化；
+CI 通过 `ctest` 自动执行。Android debug 包可连同一个进程（`adb reverse tcp:9100` +
+`files/ble_sim` 开关），无需 ESP32。细节与边界见 `platforms/desktop/README.md`。
+
+它不验证 BLE 射频/配对/后台保活、CO5300 面板、PSRAM 压力、QMI8658、功耗和实车路线。
+
 ## Node 网关
 
 ```sh

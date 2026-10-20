@@ -24,9 +24,13 @@ jobs:
           node-version: '24'
       - name: Build shared core and host tests
         run: |
-          cmake -S . -B build/native -DMOTO_BUILD_WEB=OFF -DMOTO_BUILD_TESTS=ON
+          cmake -S . -B build/native -DMOTO_BUILD_WEB=OFF -DMOTO_BUILD_TESTS=ON \
+                -DMOTO_BUILD_SIM=ON
           cmake --build build/native --parallel 4
           ctest --test-dir build/native --output-on-failure
+      - name: Virtual device end-to-end self-test
+        run: |
+          ./build/native/bin/moto_device_sim --selftest --port 0
       - name: Backend tests (no live API)
         run: |
           npm ci --prefix backend

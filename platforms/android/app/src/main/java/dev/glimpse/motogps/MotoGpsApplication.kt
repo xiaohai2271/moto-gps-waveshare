@@ -1,6 +1,7 @@
 package dev.glimpse.motogps
 
 import android.app.Application
+import dev.glimpse.motogps.ble.BleTransport
 import dev.glimpse.motogps.ble.Esp32BleCentral
 import dev.glimpse.motogps.nav.NavigationSession
 
@@ -8,8 +9,12 @@ import dev.glimpse.motogps.nav.NavigationSession
  * Process-scoped singletons: the BLE central and the navigation session must be
  * shared by the Compose screens so switching tabs cannot create a second GATT
  * connection or a second navigation core.
+ *
+ * [createTransportFactory] is the single debug-only injection point used by
+ * `DebugMotoGpsApplication` to attach the loopback virtual device instead of
+ * the Android BluetoothGatt transport. Release builds keep returning null.
  */
-class MotoGpsApplication : Application() {
+open class MotoGpsApplication : Application() {
     lateinit var bleCentral: Esp32BleCentral
         private set
     lateinit var navigationSession: NavigationSession
@@ -18,7 +23,10 @@ class MotoGpsApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLogger.install(this)
-        bleCentral = Esp32BleCentral(this)
+        bleCentral = Esp32BleCentral(this, transportFactory = createTransportFactory())
         navigationSession = NavigationSession(this, bleCentral)
     }
+
+    protected open fun createTransportFactory(): ((BleTransport.Listener) -> BleTransport)? =
+        null
 }
