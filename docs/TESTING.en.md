@@ -7,6 +7,9 @@
 All of the following are local tests/builds; they do not flash the board or install the app on a phone, and they do not access the real AMap service.
 Initialise the `third_party/lvgl` submodule first.
 
+> AI / automation agents: read [AGENTS.md](../AGENTS.md) first. It defines the
+> checks required per touched area, the evidence format, and the constraints.
+
 ## C++ / shared core
 
 ```sh
