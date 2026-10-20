@@ -79,12 +79,15 @@ private val PreviewSlot = Color(0x55FFFFFF)
 /**
  * @param onDrag 拖拽中回调，参数为组件 id 与拖拽点画布坐标（中心点）。
  * @param onDragEnd 松手回调（父级负责吸附与提交）。
+ * @param showDemoData 是否叠加演示底图（示例路网/路线/车标）。关闭后只留组件与
+ *   地图区几何，便于在空底图上检查布局与透明度（§7.2 工具栏开关）。
  */
 @Composable
 fun DevicePreview(
     layout: UiLayout,
     selected: LayoutComponentId?,
     modifier: Modifier = Modifier,
+    showDemoData: Boolean = true,
     onComponentTap: (LayoutComponentId?) -> Unit = {},
     onDragStart: (LayoutComponentId) -> Unit = {},
     onDrag: (LayoutComponentId, Float, Float) -> Unit = { _, _, _ -> },
@@ -140,7 +143,7 @@ fun DevicePreview(
                     size = Size(size.width, layout.map.heightPx * k),
                     alpha = layout.map.opacity / 100f,
                 )
-                drawDemoStreets(layout, k)
+                drawDemoStreets(layout, k, showDemoData)
             }
 
             drawArcs(layout, k)
@@ -171,7 +174,10 @@ private fun hitTest(layout: UiLayout, x: Float, y: Float): LayoutComponentId? {
     return null
 }
 
-private fun DrawScope.drawDemoStreets(layout: UiLayout, k: Float) {
+private fun DrawScope.drawDemoStreets(layout: UiLayout, k: Float, showDemoData: Boolean) {
+    // The map area itself stays: its height and opacity are layout properties.
+    // Only the synthetic content (streets, route, rider marker) is optional.
+    if (!showDemoData) return
     val w = size.width
     val h = layout.map.heightPx * k
     val streets = listOf(

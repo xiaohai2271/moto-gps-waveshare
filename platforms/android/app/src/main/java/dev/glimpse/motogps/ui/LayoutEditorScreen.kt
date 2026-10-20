@@ -60,6 +60,8 @@ fun LayoutEditorScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var selectedComponent by remember { mutableStateOf<LayoutComponentId?>(null) }
     var showResetDialog by remember { mutableStateOf(false) }
+    // §7.2 工具栏：预览是否叠加演示底图（关掉后可空底图检查布局）。
+    var showDemoData by remember { mutableStateOf(true) }
 
     // 待推送变更自动触发推送（300ms 防抖由 NavViewModel 协程负责）。
     LaunchedEffect(state.layout.revision, state.syncState) {
@@ -94,6 +96,10 @@ fun LayoutEditorScreen(
         ) {
             ToolButton("撤销", enabled = editor.canUndo) { editor.undo() }
             ToolButton("重做", enabled = editor.canRedo) { editor.redo() }
+            ToolButton(
+                if (showDemoData) "隐藏演示" else "演示数据",
+                enabled = true,
+            ) { showDemoData = !showDemoData }
             Spacer(Modifier.weight(1f))
             ToolButton("恢复默认", enabled = true, destructive = true) { showResetDialog = true }
         }
@@ -102,6 +108,7 @@ fun LayoutEditorScreen(
         DevicePreview(
             layout = state.layout,
             selected = selectedComponent,
+            showDemoData = showDemoData,
             onComponentTap = { selectedComponent = it },
             onDragStart = { selectedComponent = it },
             onDragEnd = { id ->
