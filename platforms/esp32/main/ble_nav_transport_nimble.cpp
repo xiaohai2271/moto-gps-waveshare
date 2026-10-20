@@ -121,7 +121,10 @@ esp_err_t BleNavTransport::start() {
   }
   ble_store_config_init();
 
-  if (xTaskCreate(rx_task, "moto_ble_rx", 8192, this, 5,
+  // FreeRTOS task stacks always live in internal RAM on the ESP32-S3, where
+  // the WiFi and BLE controllers also compete for the same pool. Keep this
+  // worker small: it only reassembles BLE frames and never calls into LVGL.
+  if (xTaskCreate(rx_task, "moto_ble_rx", 4'096, this, 5,
                   &rx_task_handle_) != pdPASS) {
     ESP_LOGE(kTag, "could not start BLE protocol worker");
     return ESP_ERR_NO_MEM;

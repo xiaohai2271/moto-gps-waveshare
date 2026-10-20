@@ -29,7 +29,14 @@ constexpr char kTag[] = "board_waveshare";
 // Keep internal SRAM available for BLE and heading task stacks. Two 320-row
 // PSRAM buffers reduce repeated map traversal and still overlap drawing with
 // QSPI DMA. A 32-row internal-buffer experiment exhausted BLE startup memory.
-constexpr std::uint16_t kDrawBufferHeight = 320;
+//
+// The 320-row buffer also turned out to be too greedy for the PSRAM bus once
+// the WiFi driver was running: the WiFi/LWIP pools live in PSRAM as well, and
+// a 298 KiB display burst then lost its DMA refill (spi_master: "DMA TX
+// underflow detected"), which froze the panel. 128 rows keeps a single flush
+// burst around 120 KiB, which the octal PSRAM can sustain while WiFi is
+// active.
+constexpr std::uint16_t kDrawBufferHeight = 128;
 constexpr bool kDrawBuffersUsePsram = true;
 constexpr std::size_t kLvglExtraPoolBytes = 2U * 1024U * 1024U;
 static_assert(kLvglExtraPoolBytes <= LV_MEM_POOL_EXPAND_SIZE,

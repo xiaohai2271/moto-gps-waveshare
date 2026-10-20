@@ -49,3 +49,36 @@ CONFIG_BT_NIMBLE_NVS_PERSIST=y
 CONFIG_BT_NIMBLE_MAX_BONDS=3
 # 185 is the practical iOS ATT MTU and fits NimBLE's standard mbuf pools.
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=185
+
+# Bluetooth + WiFi coexistence on the ESP32-S3.
+#
+# The WiFi and BT controllers share the internal SRAM pool, and the LCD reads
+# its colour buffer straight out of PSRAM over the same octal bus the WiFi
+# driver uses. Getting all three to run at once needs a deliberate split:
+#
+#   * NimBLE host allocations go to PSRAM, which frees the internal SRAM that
+#     the WiFi driver needs for its mblock pools ("esf_buf_setup_static: alloc
+#     eb fail" otherwise).
+#   * The WiFi/LWIP pools stay in internal RAM, because putting them in PSRAM
+#     starves the LCD's PSRAM DMA and the panel freezes with "spi_master: DMA
+#     TX underflow detected".
+#   * The WiFi receive/transmit pools are trimmed so the driver fits into the
+#     internal RAM the display and BLE leave behind.
+#
+# CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP stays off on purpose: it is what puts
+# the WiFi buffers on the PSRAM bus that the display needs exclusively.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=2
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_MGMT_SBUF_NUM=16
+CONFIG_ESP_WIFI_CSI_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+
+# The WiFi driver runs on core 1 so it does not preempt the LVGL task and the
+# display's SPI transfers on core 0.
+CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1=y

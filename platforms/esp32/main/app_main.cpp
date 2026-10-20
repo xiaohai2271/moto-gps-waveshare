@@ -184,9 +184,6 @@ extern "C" void app_main(void) {
   // Load the persisted navigation layout (or the default) before the renderer
   // task starts: the first rendered frame already shows the rider's arrangement.
   phone_bridge.restore_layout();
-  // WiFi provisioning initializes NVS itself (its own idempotent prepare) and
-  // restores the persisted hotspot credentials so a reboot reconnects.
-  phone_bridge.start_wifi();
   board_port_unlock();
 
   if (!phone_bridge.start_renderer()) {
@@ -204,6 +201,16 @@ extern "C" void app_main(void) {
              esp_err_to_name(ble_result));
   }
 
+  // WiFi provisioning initializes NVS itself (its own idempotent prepare) and
+  // restores the persisted hotspot credentials so a reboot reconnects.
+  //
+  // This must run *after* the Bluetooth controller is up: on the ESP32-S3 the
+  // WiFi and BT controllers share the internal SRAM pool, and esp_wifi_init()
+  // claims a large chunk of it. Initializing WiFi first starves the NimBLE
+  // controller ("BLE_INIT: Malloc failed" -> EMI assert -> watchdog reset),
+  // so the BLE stack always gets first claim on that memory.
+  phone_bridge.start_wifi();
+
   static MotionHeadingSensor motion_sensor;
   const esp_err_t motion_result = motion_sensor.start(update_motion_heading,
                                                       &phone_bridge);
@@ -214,11 +221,14 @@ extern "C" void app_main(void) {
 
   // Demo generation fills the retained snapshot in place, but geometry and
   // LVGL projection still use deeper C++ call frames than a trivial task.
-  if (xTaskCreate(demo_tick_task, "moto_demo", 6'144, &phone_bridge, 2,
+  // Task stacks are always allocated from internal RAM, which the WiFi and
+  // BLE controllers also compete for. Both workers below only touch the
+  // retained snapshot and the presenter, so small stacks are enough.
+  if (xTaskCreate(demo_tick_task, "moto_demo", 3'072, &phone_bridge, 2,
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "navigation demo task could not start");
   }
-  if (xTaskCreate(power_button_task, "moto_power", 3'072, nullptr, 3,
+  if (xTaskCreate(power_button_task, "moto_power", 2'048, nullptr, 3,
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "PWR long-hold task could not start");
   }

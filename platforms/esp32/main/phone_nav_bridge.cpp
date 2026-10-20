@@ -406,7 +406,11 @@ bool PhoneNavBridge::start_renderer() {
     return true;
   }
   TaskHandle_t created = nullptr;
-  if (xTaskCreate(render_task, "moto_ui_render", 8'192, this, 2,
+  // The coalescing renderer runs on the LVGL side and must stay small: task
+  // stacks are always allocated from internal RAM, which the WiFi and BLE
+  // controllers also need. It only coalesces snapshots and hands them to the
+  // LVGL task, so 4 KiB is enough.
+  if (xTaskCreate(render_task, "moto_ui_render", 4'096, this, 2,
                   &created) != pdPASS) {
     ESP_LOGE(kTag, "could not start coalescing UI renderer");
     return false;
