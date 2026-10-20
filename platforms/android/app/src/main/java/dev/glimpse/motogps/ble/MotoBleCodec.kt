@@ -29,6 +29,18 @@ data class RemoteCommand(
 /** Decoded Ack status. */
 data class DecodedAck(val acknowledgedSequence: Int, val status: Int, val commandId: Int)
 
+data class DecodedWifiStatus(
+    val state: Int,
+    val rssi: Int,
+    val error: Int,
+    val ipv4: Long,
+    val ssid: String,
+)
+
+data class DecodedWifiAp(val rssi: Int, val auth: Int, val ssid: String)
+
+data class DecodedWifiScan(val requestId: Int, val accessPoints: List<DecodedWifiAp>)
+
 /**
  * Decoded UiLayoutState (device -> phone, protocol §UiLayoutState). Values map
  * straight onto the C++ decodeUiLayoutState result; the rich model lives in
@@ -121,6 +133,48 @@ class MotoBleCodec : AutoCloseable {
             flags = v[4],
             reserved = v[5],
         )
+    }
+
+    /** Encodes a WifiConfig message (docs §5.5). */
+    fun encodeWifiConfig(
+        action: Int,
+        flags: Int,
+        ssid: String,
+        password: String,
+    ): ByteArray = NativeBridge.encodeWifiConfig(action, flags, ssid, password)
+
+    /** Decodes WifiStatus; throws on malformed payloads. */
+    fun decodeWifiStatus(payload: ByteArray): DecodedWifiStatus {
+        val v = NativeBridge.decodeWifiStatus(payload)
+        return DecodedWifiStatus(
+            state = (v[0] as Int),
+            rssi = (v[1] as Int),
+            error = (v[2] as Int),
+            ipv4 = (v[3] as Long),
+            ssid = (v[4] as String),
+        )
+    }
+
+    /** Encodes a WifiScanRequest; throws on requestId <= 0. */
+    fun encodeWifiScanRequest(requestId: Int): ByteArray =
+        NativeBridge.encodeWifiScanRequest(requestId)
+
+    /** Decodes WifiScanResult; throws on malformed payloads. */
+    fun decodeWifiScanResult(payload: ByteArray): DecodedWifiScan {
+        val v = NativeBridge.decodeWifiScanResult(payload)
+        val count = v[1] as Int
+        val aps = ArrayList<DecodedWifiAp>(count)
+        for (i in 0 until count) {
+            val base = 2 + i * 3
+            aps.add(
+                DecodedWifiAp(
+                    rssi = v[base] as Int,
+                    auth = v[base + 1] as Int,
+                    ssid = v[base + 2] as String,
+                ),
+            )
+        }
+        return DecodedWifiScan(requestId = v[0] as Int, accessPoints = aps)
     }
 
     /** Result of pushing one inbound GATT notification into the C++ reassembler. */

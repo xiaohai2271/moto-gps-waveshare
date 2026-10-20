@@ -93,6 +93,7 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
     var showMapDownloads by remember { mutableStateOf(false) }
     var showLayoutEditor by remember { mutableStateOf(false) }
     var showPermissions by remember { mutableStateOf(false) }
+    var showWifi by remember { mutableStateOf(false) }
 
     if (showLayoutEditor) {
         LayoutEditorScreen(
@@ -131,11 +132,16 @@ fun MotoAppScreen(vm: NavViewModel = viewModel()) {
         onDismiss = { showDevice = false },
         onOpenLayoutEditor = { showLayoutEditor = true },
         onOpenPermissions = { showPermissions = true },
+        onOpenWifi = { showWifi = true },
     )
     if (showGateway) GatewaySettingsSheet(vm, onDismiss = { showGateway = false })
     if (showPrivacy) DataUseSheet(onDismiss = { showPrivacy = false })
     if (showMapDownloads) MapDownloadsSheet(onDismiss = { showMapDownloads = false })
     if (showPermissions) PermissionCenterSheet(onDismiss = { showPermissions = false })
+    if (showWifi) {
+        val wifiVm = remember(vm) { WifiProvisioningViewModel(vm.bleCentral()) }
+        WifiSettingsSheet(vm = wifiVm, onDismiss = { showWifi = false })
+    }
 }
 
 enum class MotoScreen { Home, RoutePreview, ActiveNavigation }
@@ -895,6 +901,7 @@ private fun DeviceDetailsSheet(
     onDismiss: () -> Unit,
     onOpenLayoutEditor: () -> Unit,
     onOpenPermissions: () -> Unit,
+    onOpenWifi: () -> Unit,
 ) {
     val devices by vm.devices.collectAsState()
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -1025,6 +1032,34 @@ private fun DeviceDetailsSheet(
                     }
                 }
             }
+            GroupSection(header = "圆屏 WiFi", footer = "配网后圆屏可通过 WiFi 更新地图、访问 /health 端点。") {
+                val wifiSupported =
+                    bleState !is Esp32BleCentral.State.Connected || vm.deviceSupportsWifi
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = wifiSupported) { onOpenWifi() }
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("📶", fontSize = 16.sp)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "圆屏 WiFi 配网",
+                            fontSize = 16.sp,
+                            color = if (wifiSupported) Color(0xFF000000) else IosSecondary,
+                        )
+                        if (!wifiSupported) {
+                            Text("固件需升级", fontSize = 13.sp, color = IosOrange)
+                        }
+                    }
+                    if (wifiSupported) {
+                        Text("›", fontSize = 14.sp, color = IosSecondary.copy(alpha = 0.6f))
+                    }
+                }
+            }
+
             GroupSection(header = "权限") {
                 Row(
                     Modifier.fillMaxWidth()

@@ -1360,4 +1360,140 @@ Java_dev_glimpse_motogps_NativeBridge_decodeUiLayoutState(
   return out;
 }
 
+// --- WiFi provisioning (docs §5.5) -----------------------------------------
+
+// @param action 0..3 (save/connect/tmp/disconnect/forget), flags bit0 hidden,
+//   bit1 auto_reconnect; ssid 1..32 UTF-8 bytes; password 0..64 bytes.
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeWifiConfig(
+    JNIEnv* env, jclass /*clazz*/, jint action, jint flags, jstring ssid,
+    jstring password) {
+  auto read = [env](jstring value) -> std::string {
+    if (value == nullptr) {
+      return {};
+    }
+    const char* text = env->GetStringUTFChars(value, nullptr);
+    std::string out = text == nullptr ? std::string{} : std::string{text};
+    if (text != nullptr) {
+      env->ReleaseStringUTFChars(value, text);
+    }
+    return out;
+  };
+  moto::ble::WifiConfig config;
+  if (action < 0 || action > 3) {
+    Throw(env, "encode wifi config action: ", moto::ble::Error::InvalidEnum);
+    return nullptr;
+  }
+  config.action = static_cast<std::uint8_t>(action);
+  config.flags = static_cast<std::uint8_t>(flags & 0xFF);
+  config.ssid = read(ssid);
+  config.password = read(password);
+  const BytesResult result = Encode(moto::ble::Message{config});
+  if (!result.ok()) {
+    Throw(env, "encode wifi config failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
+}
+
+// @return [state, rssi, error, ipv4Le, ssid]
+JNIEXPORT jobjectArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_decodeWifiStatus(
+    JNIEnv* env, jclass /*clazz*/, jbyteArray payload) {
+  Bytes buffer;
+  ReadBytes(env, payload, &buffer);
+  const moto::ble::MessageResult result = moto::ble::decode_message(
+      moto::ble::MessageType::WifiStatus,
+      moto::ble::ByteView{buffer.data(), buffer.size()});
+  if (!result.ok()) {
+    Throw(env, "decode wifi status failed: ", result.error);
+    return nullptr;
+  }
+  const auto& status = std::get<moto::ble::WifiStatus>(result.value);
+  jclass object_class = env->FindClass("java/lang/Object");
+  jobjectArray out = env->NewObjectArray(5, object_class, nullptr);
+  env->SetObjectArrayElement(
+      out, 0, env->NewObject(env->FindClass("java/lang/Integer"),
+                             env->GetMethodID(env->FindClass("java/lang/Integer"),
+                                              "<init>", "(I)V"),
+                             static_cast<jint>(status.state)));
+  env->SetObjectArrayElement(
+      out, 1, env->NewObject(env->FindClass("java/lang/Integer"),
+                             env->GetMethodID(env->FindClass("java/lang/Integer"),
+                                              "<init>", "(I)V"),
+                             static_cast<jint>(status.rssi_dbm)));
+  env->SetObjectArrayElement(
+      out, 2, env->NewObject(env->FindClass("java/lang/Integer"),
+                             env->GetMethodID(env->FindClass("java/lang/Integer"),
+                                              "<init>", "(I)V"),
+                             static_cast<jint>(status.error)));
+  env->SetObjectArrayElement(
+      out, 3, env->NewObject(env->FindClass("java/lang/Long"),
+                             env->GetMethodID(env->FindClass("java/lang/Long"),
+                                              "<init>", "(J)V"),
+                             static_cast<jlong>(status.ipv4_le)));
+  env->SetObjectArrayElement(
+      out, 4, env->NewStringUTF(status.ssid.c_str()));
+  return out;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_encodeWifiScanRequest(
+    JNIEnv* env, jclass /*clazz*/, jint request_id) {
+  moto::ble::WifiScanRequest request;
+  if (request_id <= 0 || request_id > 0xFFFF) {
+    Throw(env, "encode wifi scan request id: ", moto::ble::Error::OutOfRange);
+    return nullptr;
+  }
+  request.request_id = static_cast<std::uint16_t>(request_id);
+  const BytesResult result = Encode(moto::ble::Message{request});
+  if (!result.ok()) {
+    Throw(env, "encode wifi scan request failed: ", result.error);
+    return nullptr;
+  }
+  return MakeJByteArray(env, result.value);
+}
+
+// @return [requestId, apCount, then per AP: rssi, auth, ssid]
+JNIEXPORT jobjectArray JNICALL
+Java_dev_glimpse_motogps_NativeBridge_decodeWifiScanResult(
+    JNIEnv* env, jclass /*clazz*/, jbyteArray payload) {
+  Bytes buffer;
+  ReadBytes(env, payload, &buffer);
+  const moto::ble::MessageResult result = moto::ble::decode_message(
+      moto::ble::MessageType::WifiScanResult,
+      moto::ble::ByteView{buffer.data(), buffer.size()});
+  if (!result.ok()) {
+    Throw(env, "decode wifi scan result failed: ", result.error);
+    return nullptr;
+  }
+  const auto& scan = std::get<moto::ble::WifiScanResult>(result.value);
+  const std::size_t count = scan.access_points.size();
+  jclass object_class = env->FindClass("java/lang/Object");
+  jobjectArray out = env->NewObjectArray(static_cast<jsize>(2 + count * 3),
+                                         object_class, nullptr);
+  jclass integer_class = env->FindClass("java/lang/Integer");
+  jmethodID integer_ctor = env->GetMethodID(integer_class, "<init>", "(I)V");
+  env->SetObjectArrayElement(
+      out, 0, env->NewObject(integer_class, integer_ctor,
+                             static_cast<jint>(scan.request_id)));
+  env->SetObjectArrayElement(
+      out, 1, env->NewObject(integer_class, integer_ctor,
+                             static_cast<jint>(count)));
+  std::size_t index = 2;
+  for (const auto& ap : scan.access_points) {
+    env->SetObjectArrayElement(
+        out, static_cast<jsize>(index++),
+        env->NewObject(integer_class, integer_ctor,
+                       static_cast<jint>(ap.rssi_dbm)));
+    env->SetObjectArrayElement(
+        out, static_cast<jsize>(index++),
+        env->NewObject(integer_class, integer_ctor,
+                       static_cast<jint>(ap.auth)));
+    env->SetObjectArrayElement(
+        out, static_cast<jsize>(index++), env->NewStringUTF(ap.ssid.c_str()));
+  }
+  return out;
+}
+
 }  // extern "C"

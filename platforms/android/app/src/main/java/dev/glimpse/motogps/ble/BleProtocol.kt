@@ -32,6 +32,46 @@ object BleProtocol {
         const val MAP_SCENE = 0x14
         const val UI_LAYOUT = 0x15
         const val UI_LAYOUT_STATE = 0x16
+        const val WIFI_CONFIG = 0x17
+        const val WIFI_STATUS = 0x18
+        const val WIFI_SCAN_REQUEST = 0x19
+        const val WIFI_SCAN_RESULT = 0x1A
+
+        /** WifiStatus.state (docs §5.5). */
+        object WifiState {
+            const val OFF = 0
+            const val CONNECTING = 1
+            const val CONNECTED = 2
+            const val FAILED = 3
+            const val NO_CREDENTIALS = 4
+        }
+
+        /** WifiStatus.error. */
+        object WifiError {
+            const val NONE = 0
+            const val AUTH = 1
+            const val SSID_NOT_FOUND = 2
+            const val TIMEOUT = 3
+            const val INTERNAL = 4
+        }
+
+        /** WifiScanResult AP auth mode. */
+        object WifiAuth {
+            const val OPEN = 0
+            const val WPA2 = 1
+            const val WPA3 = 2
+            const val WPA2_WPA3 = 3
+        }
+
+        /** WifiConfig.action (docs §5.5). */
+        const val WIFI_ACTION_SAVE_AND_CONNECT = 0
+        const val WIFI_ACTION_CONNECT_TEMPORARY = 1
+        const val WIFI_ACTION_DISCONNECT = 2
+        const val WIFI_ACTION_FORGET = 3
+
+        /** WifiConfig.flags bits. */
+        const val WIFI_FLAG_HIDDEN = 1 shl 0
+        const val WIFI_FLAG_AUTO_RECONNECT = 1 shl 1
         const val DEVICE_COMMAND = 0x20
     }
 

@@ -97,6 +97,9 @@ class Esp32BleCentral(
     private var lastLayoutEncoded: ByteArray? = null
     /** Revision the device reported via UiLayoutState (0 = not reported). */
     private var deviceLayoutRevision = 0L
+
+    private val _wifiStatus = MutableStateFlow<DecodedWifiStatus?>(null)
+    private val _wifiScan = MutableStateFlow<DecodedWifiScan?>(null)
     /** Recent device command ids for the current session, oldest first. */
     private val commandDeduper = DeviceCommandDeduper()
 
@@ -304,6 +307,74 @@ class Esp32BleCentral(
     /** The layout revision the device last reported (UiLayoutState), 0 if none. */
     fun reportedLayoutRevision(): Long = deviceLayoutRevision
 
+    // --- WiFi provisioning (docs §5.5) -----------------------------------
+
+    /** Latest WifiStatus pushed by the device, null until the first report. */
+    val deviceWifiStatus: StateFlow<DecodedWifiStatus?> get() = _wifiStatus
+
+    /** Latest WifiScanResult pushed by the device, null until the first scan. */
+    val deviceWifiScan: StateFlow<DecodedWifiScan?> get() = _wifiScan
+
+    /** WifiStatus listener (device pushes on every state change). */
+    var wifiStatusListener: ((DecodedWifiStatus) -> Unit)? = null
+
+    /** WifiScanResult listener. */
+    var wifiScanListener: ((DecodedWifiScan) -> Unit)? = null
+
+    /**
+     * Sends a WifiConfig message. Requires capability bit9; returns false when
+     * the device did not offer WiFi provisioning or the connection is down.
+     */
+    fun sendWifiConfig(
+        action: Int,
+        flags: Int,
+        ssid: String,
+        password: String,
+    ): Boolean {
+        val connected = _state.value as? State.Connected ?: return false
+        if (connected.capabilities and BleProtocol.Capability.WIFI_PROVISIONING == 0L) return false
+        val encoded = runCatching { codec.encodeWifiConfig(action, flags, ssid, password) }
+            .getOrElse {
+                logLine("WifiConfig 编码失败：${it.message}")
+                return false
+            }
+        val frames = runCatching {
+            codec.fragment(
+                BleProtocol.MessageType.WIFI_CONFIG, nextSequence(), encoded,
+                currentFrameSize(), BleProtocol.Flags.ACK_REQUESTED,
+            )
+        }.getOrElse {
+            logLine("WifiConfig 分片失败：${it.message}")
+            return false
+        }
+        outbound.enqueueMessage(frames, "wifi-config")
+        schedulePump()
+        return true
+    }
+
+    /** Sends a WifiScanRequest; results arrive via wifiScanListener. */
+    fun sendWifiScanRequest(requestId: Int): Boolean {
+        val connected = _state.value as? State.Connected ?: return false
+        if (connected.capabilities and BleProtocol.Capability.WIFI_PROVISIONING == 0L) return false
+        val encoded = runCatching { codec.encodeWifiScanRequest(requestId) }
+            .getOrElse {
+                logLine("WifiScanRequest 编码失败：${it.message}")
+                return false
+            }
+        val frames = runCatching {
+            codec.fragment(
+                BleProtocol.MessageType.WIFI_SCAN_REQUEST, nextSequence(), encoded,
+                currentFrameSize(), 0,
+            )
+        }.getOrElse {
+            logLine("WifiScanRequest 分片失败：${it.message}")
+            return false
+        }
+        outbound.enqueueMessage(frames, "wifi-scan")
+        schedulePump()
+        return true
+    }
+
     private fun fragmentLayout(encoded: ByteArray) {
         val frames = runCatching {
             codec.fragment(
@@ -423,6 +494,8 @@ class Esp32BleCentral(
         codec.resetReassembler()
         commandDeduper.reset()
         outbound.clear()
+        _wifiStatus.value = null
+        _wifiScan.value = null
         logLine("连接断开" + (reason?.let { "：$it" } ?: ""))
         if (userInitiatedDisconnect || targetAddress == null) {
             _state.value = State.Idle
@@ -496,6 +569,31 @@ class Esp32BleCentral(
                         "source=${state.source} mask=0x${state.supportedMask.toString(16)}",
                 )
                 runCatching { layoutStateListener?.invoke(state) }
+            }
+
+            BleProtocol.MessageType.WIFI_STATUS -> {
+                val status = runCatching { codec.decodeWifiStatus(message.payload) }
+                    .getOrElse {
+                        logLine("WifiStatus 解码失败")
+                        return
+                    }
+                _wifiStatus.value = status
+                logLine(
+                    "圆屏 WiFi 状态 state=${status.state} rssi=${status.rssi} " +
+                        "error=${status.error} ssid=${status.ssid}",
+                )
+                runCatching { wifiStatusListener?.invoke(status) }
+            }
+
+            BleProtocol.MessageType.WIFI_SCAN_RESULT -> {
+                val scan = runCatching { codec.decodeWifiScanResult(message.payload) }
+                    .getOrElse {
+                        logLine("WifiScanResult 解码失败")
+                        return
+                    }
+                _wifiScan.value = scan
+                logLine("圆屏 WiFi 扫描 id=${scan.requestId} AP=${scan.accessPoints.size}")
+                runCatching { wifiScanListener?.invoke(scan) }
             }
 
             BleProtocol.MessageType.DEVICE_COMMAND -> {

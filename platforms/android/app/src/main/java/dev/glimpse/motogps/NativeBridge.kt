@@ -197,4 +197,32 @@ object NativeBridge {
 
     /** @return [revision, layoutRevision, source, supportedMask, flags, reserved] */
     external fun decodeUiLayoutState(payload: ByteArray): IntArray
+
+    /**
+     * WiFi provisioning (docs §5.5). Encoding goes through the shared C++
+     * codec like every other message; only the int-array mapping is
+     * duplicated here.
+     *
+     * encodeWifiConfig(action, flags, ssid, password) — action 0..3,
+     * flags bit0 hidden, bit1 auto_reconnect; ssid 1..32, password 0..64
+     * bytes; disconnect(2)/forget(3) must send empty credentials.
+     */
+    external fun encodeWifiConfig(
+        action: Int,
+        flags: Int,
+        ssid: String,
+        password: String,
+    ): ByteArray
+
+    /** decodeWifiStatus → [state, rssi, error, ipv4Le, ssid] (ssid last). */
+    external fun decodeWifiStatus(payload: ByteArray): Array<Any>
+
+    /** encodeWifiScanRequest(requestId) — requestId must be > 0. */
+    external fun encodeWifiScanRequest(requestId: Int): ByteArray
+
+    /**
+     * decodeWifiScanResult → [requestId, apCount, then per AP:
+     * rssi, auth, ssidBytes(≤32)]; the Kotlin caller rebuilds the typed list.
+     */
+    external fun decodeWifiScanResult(payload: ByteArray): Array<Any>
 }

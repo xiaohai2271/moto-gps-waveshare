@@ -28,6 +28,9 @@ import kotlinx.coroutines.launch
 class NavViewModel(application: Application) : AndroidViewModel(application) {
     private val central: Esp32BleCentral =
         (application as MotoGpsApplication).bleCentral
+
+    /** The BLE central, for WiFi provisioning screens. */
+    fun bleCentral(): Esp32BleCentral = central
     private val session: NavigationSession =
         (application as MotoGpsApplication).navigationSession
 
@@ -45,6 +48,10 @@ class NavViewModel(application: Application) : AndroidViewModel(application) {
     val deviceSupportsLayout: Boolean
         get() = (central.state.value as? Esp32BleCentral.State.Connected)
             ?.let { it.capabilities and BleProtocol.Capability.UI_LAYOUT != 0L } ?: false
+
+    val deviceSupportsWifi: Boolean
+        get() = (central.state.value as? Esp32BleCentral.State.Connected)
+            ?.let { it.capabilities and BleProtocol.Capability.WIFI_PROVISIONING != 0L } ?: false
 
     private var lastPushedRevision = -1
     private var pushDebounce: Job? = null
