@@ -683,7 +683,13 @@ class NavigationSession(
         navigating = false
         ticker?.cancel()
         ticker = null
-        engine.cancel()
+        // cancel() resets the core session (state -> Idle, no destination, no
+        // route view). Keep its snapshot: it is the terminal frame the round
+        // display needs.
+        val ended = runCatching { engine.cancel() }.getOrNull()?.snapshot
+        // The next navigation must resend its geometry even if the gateway
+        // reuses the route token/generation.
+        lastGeometryKey = null
         chosenPreviewRoute = null
         suppliedPreviewRoute = false
         // iOS stopNavigation(): return to the destination search state.
@@ -702,6 +708,13 @@ class NavigationSession(
             previewOrigin = null,
         )
         log("导航已结束")
+        // publish() drops every update while !navigating, so the terminal frame
+        // has to be sent explicitly. Without it the device keeps the last route,
+        // maneuver and distances on screen until the BLE link drops.
+        if (ended != null) {
+            runCatching { sendSnapshot(ended, priority = true) }
+                .onFailure { log("导航结束帧发送失败：${it.message}") }
+        }
     }
 
     fun close() {

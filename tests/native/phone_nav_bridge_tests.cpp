@@ -945,6 +945,77 @@ void test_layout_pushed_during_the_flash_write_is_not_lost() {
         moto::ble::AckStatus::Duplicate);
 }
 
+void test_idle_snapshot_leaves_navigation_and_clears_the_route() {
+  moto::test::reset_phone_nav_bridge_probe();
+  // The bridge restores the persisted layout in its constructor, and the host
+  // store is process-global. Reset it first, or a layout written by an earlier
+  // test (a shorter map viewport) changes what counts as "inside" here.
+  moto_ui_layout_store::factory_reset();
+  moto::nav::NavPresenter presenter;
+  PhoneNavBridge bridge(presenter);
+  bridge.install_ui_callbacks();
+  bridge.on_link_state(true);
+
+  // A short route just south-east of the origin: all three points stay inside
+  // the default 232 px map viewport, so clipping cannot hide the geometry.
+  moto::ble::RouteGeometry geometry;
+  geometry.route_token = moto::ble::route_token("ble-end-test");
+  geometry.route_generation = 1;
+  geometry.total_point_count = 3;
+  geometry.view_origin = {36'674'773, 117'128'056};
+  geometry.points = {
+      {36'674'773, 117'128'056},
+      {36'674'593, 117'128'392},
+      {36'674'413, 117'128'280},
+  };
+
+  moto::ble::NavigationSnapshot navigating;
+  navigating.state = moto::ble::NavigationState::Navigating;
+  navigating.network = moto::ble::NetworkState::Online;
+  navigating.flags = moto::ble::NavigationHasDestination |
+                     moto::ble::NavigationHasFix |
+                     moto::ble::NavigationHasNextManeuver |
+                     moto::ble::NavigationHasRouteView;
+  navigating.route_token = moto::ble::route_token("ble-end-test");
+  navigating.route_generation = 1;
+  navigating.heading_cdeg = 9'000;
+  navigating.speed_deci_kph = 500;
+  navigating.maneuver = moto::ble::Maneuver::Left;
+  navigating.distance_to_maneuver_m = 300;
+  navigating.remaining_distance_m = 8'200;
+  navigating.remaining_duration_s = 1'260;
+  navigating.route_progress_m = 2'000;
+
+  CHECK(bridge.on_message(make_message(geometry, 1)) == moto::ble::AckStatus::Ok);
+  CHECK(bridge.on_message(make_message(navigating, 2)) == moto::ble::AckStatus::Ok);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_last_route_point_count() >= 2);
+  CHECK(moto::test::phone_nav_bridge_last_distance_to_maneuver_m() == 300);
+
+  // Exiting navigation: the phone pushes the core's post-cancel frame - Idle,
+  // no destination, no route-view flag. The device has to leave the navigation
+  // presentation instead of holding the last route and maneuver on screen until
+  // the BLE link drops (the reported "app exited, display did nothing" bug).
+  moto::ble::NavigationSnapshot idle;
+  idle.state = moto::ble::NavigationState::Idle;
+  idle.network = moto::ble::NetworkState::Online;
+  idle.flags = moto::ble::NavigationHasFix;
+  idle.route_token = moto::ble::route_token("ble-end-test");
+  idle.route_generation = 0;
+  idle.heading_cdeg = 9'000;
+  CHECK(bridge.on_message(make_message(idle, 3)) == moto::ble::AckStatus::Ok);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_last_route_point_count() == 0);
+  CHECK(moto::test::phone_nav_bridge_last_road_point_count() == 0);
+  CHECK(moto::test::phone_nav_bridge_last_distance_to_maneuver_m() == 0);
+
+  // A following snapshot must not resurrect the dropped route just because the
+  // token still matches: the geometry is gone, so there is nothing to project.
+  CHECK(bridge.on_message(make_message(idle, 4)) == moto::ble::AckStatus::Ok);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_last_route_point_count() == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -963,6 +1034,7 @@ int main() {
   test_layout_restores_the_persisted_record_instead_of_the_default();
   test_layout_malformed_payload_is_rejected_without_touching_the_screen();
   test_layout_pushed_during_the_flash_write_is_not_lost();
+  test_idle_snapshot_leaves_navigation_and_clears_the_route();
 
   if (failures != 0) {
     std::cerr << failures << " phone navigation bridge checks failed\n";
